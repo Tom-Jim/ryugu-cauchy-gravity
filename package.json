@@ -1,0 +1,16 @@
+{
+  "name": "ryugu-h-cal",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "bun run scripts/build.mjs --release",
+    "build:dev": "bun run scripts/build.mjs --dev",
+    "serve": "bun src/server.ts",
+    "dev": "bun run build:dev && bun run serve",
+    "start": "bun run build && bun run serve"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "packageManager": "bun@1.3.14"
+}
