@@ -1,6 +1,5 @@
-/**
- * Near-surface gravity-gradient bake (ESA polyhedral via C ABI).
- * Used as the computation core; Zig CLI links the same C ABI.
+/** Progressive random-order per-face gravity-gradient bake (ESA Tsoulis).
+ *  Supports --resume: keep existing gradient_faces.bin and finish unfinished faces.
  */
 #include "esa_bridge.h"
 
@@ -9,14 +8,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <random>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 static constexpr double RYUGU_BULK_DENSITY_KG_M3 = 1190.0;
 static constexpr double NEAR_SURFACE_EPS_M = 1.0e-3;
 static constexpr uint32_t MAGIC = 0x52484746; // 'RHGF'
+static constexpr uint32_t VERSION = 5;
 
 struct Mesh {
     std::vector<double> xyz;
@@ -118,19 +119,101 @@ static double frobenius6(const double H[6]) {
         H[0] * H[0] + H[1] * H[1] + H[2] * H[2] + 2.0 * (H[3] * H[3] + H[4] * H[4] + H[5] * H[5]));
 }
 
+static void write_header(std::fstream &out, uint32_t n_faces, uint32_t completed, float s_min, float s_max) {
+    out.seekp(0);
+    const uint32_t zero = 0;
+    out.write(reinterpret_cast<const char *>(&MAGIC), 4);
+    out.write(reinterpret_cast<const char *>(&VERSION), 4);
+    out.write(reinterpret_cast<const char *>(&n_faces), 4);
+    out.write(reinterpret_cast<const char *>(&completed), 4);
+    out.write(reinterpret_cast<const char *>(&zero), 4);
+    out.write(reinterpret_cast<const char *>(&s_min), 4);
+    out.write(reinterpret_cast<const char *>(&s_max), 4);
+}
+
+/** Load v5 checkpoint; returns true if usable. */
+static bool load_checkpoint(
+    const char *path,
+    size_t nf,
+    std::vector<float> &face_scalar,
+    float &s_min,
+    float &s_max,
+    size_t &n_done) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    uint32_t magic = 0, version = 0, n_mesh = 0, completed = 0, pad = 0;
+    float lo = 0, hi = 0;
+    in.read(reinterpret_cast<char *>(&magic), 4);
+    in.read(reinterpret_cast<char *>(&version), 4);
+    in.read(reinterpret_cast<char *>(&n_mesh), 4);
+    in.read(reinterpret_cast<char *>(&completed), 4);
+    in.read(reinterpret_cast<char *>(&pad), 4);
+    in.read(reinterpret_cast<char *>(&lo), 4);
+    in.read(reinterpret_cast<char *>(&hi), 4);
+    if (!in || magic != MAGIC || version != VERSION || n_mesh != nf) return false;
+
+    face_scalar.assign(nf, std::nanf(""));
+    in.read(reinterpret_cast<char *>(face_scalar.data()), static_cast<std::streamsize>(nf * sizeof(float)));
+    if (!in) return false;
+
+    n_done = 0;
+    s_min = 1e30f;
+    s_max = -1e30f;
+    for (size_t i = 0; i < nf; ++i) {
+        const float s = face_scalar[i];
+        if (std::isfinite(s)) {
+            ++n_done;
+            s_min = std::min(s_min, s);
+            s_max = std::max(s_max, s);
+        }
+    }
+    if (n_done == 0) {
+        s_min = 1e30f;
+        s_max = -1e30f;
+    }
+    (void)completed;
+    return true;
+}
+
+static bool write_order(const char *path, const std::vector<uint32_t> &order) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    const uint32_t n = static_cast<uint32_t>(order.size());
+    out.write(reinterpret_cast<const char *>(&n), 4);
+    out.write(reinterpret_cast<const char *>(order.data()), static_cast<std::streamsize>(n * 4));
+    return static_cast<bool>(out);
+}
+
+static bool load_order(const char *path, size_t nf, std::vector<uint32_t> &order) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    uint32_t n = 0;
+    in.read(reinterpret_cast<char *>(&n), 4);
+    if (!in || n != nf) return false;
+    order.resize(nf);
+    in.read(reinterpret_cast<char *>(order.data()), static_cast<std::streamsize>(nf * 4));
+    if (!in) return false;
+    std::vector<uint8_t> seen(nf, 0);
+    for (uint32_t f : order) {
+        if (f >= nf || seen[f]) return false;
+        seen[f] = 1;
+    }
+    return true;
+}
+
 int main(int argc, char **argv) {
     const char *obj_path = nullptr;
     const char *out_path = "assets/gradient_faces.bin";
-    size_t stride = 1;
-    size_t max_faces = 0;
+    const char *order_path = "assets/.bake_order.bin";
+    bool resume = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--obj" && i + 1 < argc) obj_path = argv[++i];
         else if (a == "--out" && i + 1 < argc) out_path = argv[++i];
-        else if (a == "--stride" && i + 1 < argc) stride = std::max<size_t>(1, std::stoul(argv[++i]));
-        else if (a == "--max-faces" && i + 1 < argc) max_faces = std::stoul(argv[++i]);
+        else if (a == "--order" && i + 1 < argc) order_path = argv[++i];
+        else if (a == "--resume") resume = true;
         else if (a == "--help") {
-            std::puts("ryugu_gradient_bake --obj mesh.obj [--out path] [--stride N] [--max-faces N]");
+            std::puts("ryugu_gradient_bake --obj mesh.obj [--out path] [--order path] [--resume]");
             return 0;
         }
     }
@@ -142,29 +225,7 @@ int main(int argc, char **argv) {
     Mesh mesh = load_obj_km(obj_path, 1000.0);
     const size_t nv = mesh.xyz.size() / 3;
     const size_t nf = mesh.faces.size() / 3;
-    std::printf("mesh: %zu vertices, %zu faces (meters), density=%.0f kg/m^3\n",
-                nv, nf, RYUGU_BULK_DENSITY_KG_M3);
-
-    std::vector<uint32_t> selected_faces;
-    selected_faces.reserve(nf / stride + 1);
-    for (size_t f = 0; f < nf; f += stride) {
-        selected_faces.push_back(static_cast<uint32_t>(f));
-        if (max_faces != 0 && selected_faces.size() >= max_faces) break;
-    }
-
-    std::unordered_map<uint32_t, uint32_t> local_of;
-    std::vector<uint32_t> unique_verts;
-    unique_verts.reserve(selected_faces.size() * 2);
-    for (uint32_t f : selected_faces) {
-        for (int k = 0; k < 3; ++k) {
-            const uint32_t v = mesh.faces[3 * f + k];
-            if (local_of.emplace(v, static_cast<uint32_t>(unique_verts.size())).second) {
-                unique_verts.push_back(v);
-            }
-        }
-    }
-    std::printf("baking %zu faces (%zu unique near-surface vertices)\n",
-                selected_faces.size(), unique_verts.size());
+    std::printf("mesh: %zu vertices, %zu faces (meters), density=%.0f\n", nv, nf, RYUGU_BULK_DENSITY_KG_M3);
 
     EsaPgHandle *handle = esa_pg_create(
         mesh.xyz.data(), nv, mesh.faces.data(), nf, RYUGU_BULK_DENSITY_KG_M3, 0);
@@ -176,82 +237,134 @@ int main(int argc, char **argv) {
     std::vector<double> nx, ny, nz;
     accumulate_vertex_normals(mesh, nx, ny, nz);
 
-    std::vector<double> positions(unique_verts.size() * 3);
-    for (size_t i = 0; i < unique_verts.size(); ++i) {
-        const uint32_t v = unique_verts[i];
-        positions[3 * i + 0] = mesh.xyz[3 * v + 0] + NEAR_SURFACE_EPS_M * nx[v];
-        positions[3 * i + 1] = mesh.xyz[3 * v + 1] + NEAR_SURFACE_EPS_M * ny[v];
-        positions[3 * i + 2] = mesh.xyz[3 * v + 2] + NEAR_SURFACE_EPS_M * nz[v];
-    }
+    std::vector<uint8_t> vert_ready(nv, 0);
+    std::vector<double> H_vert(nv * 6, 0.0);
 
-    std::vector<double> H6(unique_verts.size() * 6, 0.0);
-    const size_t chunk = 32;
-    for (size_t start = 0; start < unique_verts.size(); start += chunk) {
-        const size_t count = std::min(chunk, unique_verts.size() - start);
-        if (esa_pg_eval_many(
-                handle,
-                positions.data() + 3 * start,
-                count,
-                nullptr,
-                nullptr,
-                H6.data() + 6 * start) != 0) {
-            std::fprintf(stderr, "esa_pg_eval_many failed at %zu\n", start);
+    auto ensure_vert = [&](uint32_t v) -> bool {
+        if (vert_ready[v]) return true;
+        const double p[3] = {
+            mesh.xyz[3 * v + 0] + NEAR_SURFACE_EPS_M * nx[v],
+            mesh.xyz[3 * v + 1] + NEAR_SURFACE_EPS_M * ny[v],
+            mesh.xyz[3 * v + 2] + NEAR_SURFACE_EPS_M * nz[v],
+        };
+        if (esa_pg_eval(handle, p, nullptr, nullptr, H_vert.data() + 6 * v) != 0) return false;
+        vert_ready[v] = 1;
+        return true;
+    };
+
+    std::vector<float> face_scalar(nf, std::nanf(""));
+    float s_min = 1e30f, s_max = -1e30f;
+    size_t n_done = 0;
+    std::fstream out;
+
+    if (resume) {
+        if (!load_checkpoint(out_path, nf, face_scalar, s_min, s_max, n_done)) {
+            std::fprintf(stderr, "resume failed: no valid checkpoint at %s\n", out_path);
             esa_pg_destroy(handle);
             return 1;
         }
-        std::printf("evaluated %zu / %zu vertices\n", start + count, unique_verts.size());
+        out.open(out_path, std::ios::binary | std::ios::in | std::ios::out);
+        if (!out) {
+            std::fprintf(stderr, "cannot reopen %s for resume\n", out_path);
+            esa_pg_destroy(handle);
+            return 1;
+        }
+        std::printf("RESUME from %zu / %zu faces\n", n_done, nf);
         std::fflush(stdout);
+        if (n_done >= nf) {
+            write_header(out, static_cast<uint32_t>(nf), static_cast<uint32_t>(nf), s_min, s_max);
+            out.flush();
+            esa_pg_destroy(handle);
+            std::printf("wrote %zu dense face scalars to %s (s_min=%g s_max=%g)\n", nf, out_path, s_min, s_max);
+            return 0;
+        }
+    } else {
+        out.open(out_path, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+        if (!out) {
+            {
+                std::ofstream create(out_path, std::ios::binary | std::ios::trunc);
+                if (!create) {
+                    std::fprintf(stderr, "cannot write %s\n", out_path);
+                    esa_pg_destroy(handle);
+                    return 1;
+                }
+            }
+            out.open(out_path, std::ios::binary | std::ios::in | std::ios::out);
+        }
+        if (!out) {
+            std::fprintf(stderr, "cannot open %s for update\n", out_path);
+            esa_pg_destroy(handle);
+            return 1;
+        }
+        write_header(out, static_cast<uint32_t>(nf), 0, s_min, s_max);
+        out.write(reinterpret_cast<const char *>(face_scalar.data()), nf * sizeof(float));
+        out.flush();
+        n_done = 0;
     }
-    esa_pg_destroy(handle);
 
-    std::vector<uint32_t> face_indices;
-    std::vector<float> face_scalar;
-    std::vector<float> face_positions_km; // 9 floats per face, original OBJ km units for display
-    face_indices.reserve(selected_faces.size());
-    face_scalar.reserve(selected_faces.size());
-    face_positions_km.reserve(selected_faces.size() * 9);
-    float s_min = 1e30f, s_max = -1e30f;
-    for (uint32_t f : selected_faces) {
-        const uint32_t i0 = local_of[mesh.faces[3 * f]];
-        const uint32_t i1 = local_of[mesh.faces[3 * f + 1]];
-        const uint32_t i2 = local_of[mesh.faces[3 * f + 2]];
+    std::vector<uint32_t> order;
+    if (resume && load_order(order_path, nf, order)) {
+        std::printf("using saved face order from %s\n", order_path);
+    } else {
+        order.resize(nf);
+        for (size_t i = 0; i < nf; ++i) order[i] = static_cast<uint32_t>(i);
+        std::random_device rd;
+        std::mt19937 rng(rd());
+        std::shuffle(order.begin(), order.end(), rng);
+        if (!write_order(order_path, order)) {
+            std::fprintf(stderr, "warning: cannot write order file %s\n", order_path);
+        } else {
+            std::printf("saved face order to %s\n", order_path);
+        }
+    }
+    std::fflush(stdout);
+
+    std::vector<uint32_t> todo;
+    todo.reserve(nf - n_done);
+    for (uint32_t f : order) {
+        if (!std::isfinite(face_scalar[f])) todo.push_back(f);
+    }
+    std::printf("baking %zu remaining faces (progressive%s)\n", todo.size(), resume ? ", resume" : "");
+    std::fflush(stdout);
+
+    const size_t flush_every = 64;
+    size_t step = 0;
+    for (uint32_t f : todo) {
+        const uint32_t v0 = mesh.faces[3 * f];
+        const uint32_t v1 = mesh.faces[3 * f + 1];
+        const uint32_t v2 = mesh.faces[3 * f + 2];
+        if (!ensure_vert(v0) || !ensure_vert(v1) || !ensure_vert(v2)) {
+            std::fprintf(stderr, "eval failed at face %u\n", f);
+            esa_pg_destroy(handle);
+            return 1;
+        }
         double Hbar[6];
         for (int k = 0; k < 6; ++k) {
-            Hbar[k] = (H6[6 * i0 + k] + H6[6 * i1 + k] + H6[6 * i2 + k]) / 3.0;
+            Hbar[k] = (H_vert[6 * v0 + k] + H_vert[6 * v1 + k] + H_vert[6 * v2 + k]) / 3.0;
         }
         const float s = static_cast<float>(frobenius6(Hbar));
-        face_indices.push_back(f);
-        face_scalar.push_back(s);
-        for (int corner = 0; corner < 3; ++corner) {
-            const uint32_t v = mesh.faces[3 * f + corner];
-            // Convert meters back to km for display alignment with ryugu.glb / OBJ.
-            face_positions_km.push_back(static_cast<float>(mesh.xyz[3 * v + 0] / 1000.0));
-            face_positions_km.push_back(static_cast<float>(mesh.xyz[3 * v + 1] / 1000.0));
-            face_positions_km.push_back(static_cast<float>(mesh.xyz[3 * v + 2] / 1000.0));
-        }
+        face_scalar[f] = s;
         s_min = std::min(s_min, s);
         s_max = std::max(s_max, s);
+        ++n_done;
+        ++step;
+
+        const uint64_t scalar_off = 28ull + static_cast<uint64_t>(f) * 4ull;
+        out.seekp(static_cast<std::streamoff>(scalar_off));
+        out.write(reinterpret_cast<const char *>(&s), 4);
+
+        if (step % flush_every == 0 || n_done == nf) {
+            write_header(out, static_cast<uint32_t>(nf), static_cast<uint32_t>(n_done), s_min, s_max);
+            out.flush();
+            std::printf("PROGRESS %zu %zu\n", n_done, nf);
+            std::printf("faces %zu / %zu\n", n_done, nf);
+            std::fflush(stdout);
+        }
     }
 
-    std::ofstream out(out_path, std::ios::binary);
-    if (!out) {
-        std::fprintf(stderr, "cannot write %s\n", out_path);
-        return 1;
-    }
-    const uint32_t version = 3;
-    const uint32_t n_mesh_faces = static_cast<uint32_t>(nf);
-    const uint32_t n_out = static_cast<uint32_t>(face_scalar.size());
-    const uint32_t face_stride = static_cast<uint32_t>(stride);
-    out.write(reinterpret_cast<const char *>(&MAGIC), 4);
-    out.write(reinterpret_cast<const char *>(&version), 4);
-    out.write(reinterpret_cast<const char *>(&n_mesh_faces), 4);
-    out.write(reinterpret_cast<const char *>(&n_out), 4);
-    out.write(reinterpret_cast<const char *>(&face_stride), 4);
-    out.write(reinterpret_cast<const char *>(&s_min), 4);
-    out.write(reinterpret_cast<const char *>(&s_max), 4);
-    out.write(reinterpret_cast<const char *>(face_indices.data()), n_out * sizeof(uint32_t));
-    out.write(reinterpret_cast<const char *>(face_scalar.data()), n_out * sizeof(float));
-    out.write(reinterpret_cast<const char *>(face_positions_km.data()), face_positions_km.size() * sizeof(float));
-    std::printf("wrote %u face entries to %s (s_min=%g s_max=%g)\n", n_out, out_path, s_min, s_max);
+    esa_pg_destroy(handle);
+    write_header(out, static_cast<uint32_t>(nf), static_cast<uint32_t>(nf), s_min, s_max);
+    out.flush();
+    std::printf("wrote %zu dense face scalars to %s (s_min=%g s_max=%g)\n", nf, out_path, s_min, s_max);
     return 0;
 }

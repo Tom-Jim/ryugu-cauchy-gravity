@@ -3,43 +3,22 @@ import { join } from "path";
 
 const root = join(import.meta.dir, "..");
 const profile = Bun.argv.includes("--dev") ? "dev" : "release";
+const glb = join(root, "assets/models/ryugu.glb");
 
 mkdirSync(join(root, "assets/models"), { recursive: true });
 
-const glbSrc = join(root, "models/ryugu.glb");
-const glbDst = join(root, "assets/models/ryugu.glb");
-const srcFile = Bun.file(glbSrc);
-if (!(await srcFile.exists())) {
-  console.error("Missing models/ryugu.glb");
-  process.exit(1);
-}
-if (!(await Bun.file(glbDst).exists())) {
-  await Bun.write(glbDst, srcFile);
-  console.log("Copied assets/models/ryugu.glb");
+if (!(await Bun.file(glb).exists())) {
+  const src = Bun.file(join(root, "../Ryugu_wasm/assets/models/ryugu.glb"));
+  if (!(await src.exists())) {
+    console.error("Missing assets/models/ryugu.glb");
+    process.exit(1);
+  }
+  await Bun.write(glb, src);
 }
 
-const result = Bun.spawnSync(
-  [
-    "wasm-pack",
-    "build",
-    `--${profile}`,
-    "--target",
-    "web",
-    "--out-dir",
-    "pkg",
-    "--out-name",
-    "ryugu_h_cal",
-  ],
-  {
-    cwd: root,
-    stdout: "inherit",
-    stderr: "inherit",
-    env: { ...process.env, RUSTC_WRAPPER: "" },
-  },
+const r = Bun.spawnSync(
+  ["wasm-pack", "build", `--${profile}`, "--target", "web", "--out-dir", "pkg", "--out-name", "ryugu_h_cal"],
+  { cwd: root, stdout: "inherit", stderr: "inherit", env: { ...process.env, RUSTC_WRAPPER: "" } },
 );
-
-if (result.exitCode !== 0) {
-  process.exit(result.exitCode ?? 1);
-}
-
-console.log(`WASM build (${profile}) → pkg/`);
+if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
+console.log(`ok → pkg/ (${profile})`);

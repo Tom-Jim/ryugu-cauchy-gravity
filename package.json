@@ -3,18 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "bun run scripts/build.mjs --release",
-    "build:dev": "bun run scripts/build.mjs --dev",
+    "build": "bun scripts/build.mjs --release",
+    "build:dev": "bun scripts/build.mjs --dev",
     "serve": "bun src/server.ts",
     "dev": "bun run build:dev && bun run serve",
-    "start": "bun run build && bun run serve",
     "esa:configure": "cmake -S vendor/polyhedral-gravity-model -B native/esa-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYHEDRAL_GRAVITY_PARALLELIZATION=CPP -DBUILD_POLYHEDRAL_GRAVITY_PYTHON_INTERFACE=OFF -DBUILD_POLYHEDRAL_GRAVITY_TESTS=OFF -DBUILD_POLYHEDRAL_GRAVITY_EXECUTABLE=OFF -DBUILD_POLYHEDRAL_GRAVITY_LIBRARY=ON -DPOLYHEDRAL_GRAVITY_LOGGING_LEVEL=WARN && cmake --build native/esa-build -j",
     "esa:bridge": "cmake -S native -B native/bridge-build -DCMAKE_BUILD_TYPE=Release && cmake --build native/bridge-build -j",
-    "esa:smoke": "cd native && zig build -Doptimize=ReleaseFast run",
-    "bake:gradient": "bun run scripts/bake_gradient.mjs"
-  },
-  "engines": {
-    "bun": ">=1.3.0"
-  },
-  "packageManager": "bun@1.3.14"
+    "bake:gradient": "bun scripts/bake_gradient.mjs"
+  }
 }

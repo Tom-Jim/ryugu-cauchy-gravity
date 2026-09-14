@@ -42,8 +42,5 @@ set(SPDLOG_A "${ESA_BUILD_DIR}/_deps/spdlog-build/libspdlog.a")
 
 target_link_libraries(esa_pg_bridge PUBLIC "${TETGEN_A}" "${YAML_A}" "${SPDLOG_A}")
 
-add_executable(cube_smoke cube_smoke.cpp)
-target_link_libraries(cube_smoke PRIVATE esa_pg_bridge)
-
 add_executable(ryugu_gradient_bake_cpp bake_main.cpp)
 target_link_libraries(ryugu_gradient_bake_cpp PRIVATE esa_pg_bridge)
