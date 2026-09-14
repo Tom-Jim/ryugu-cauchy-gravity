@@ -1,4 +1,6 @@
-//! Minimal Ryugu asteroid viewer: load GLB, normalize scale, spin, orbit camera.
+//! Minimal Ryugu viewer: GLB body + ESA gravity-gradient WGSL overlay.
+
+mod gradient;
 
 use bevy::asset::AssetMetaCheck;
 use bevy::camera::primitives::Aabb;
@@ -9,16 +11,13 @@ use bevy::render::{RenderPlugin, render_resource::WgpuLimits};
 use bevy::window::PresentMode;
 use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
+use gradient::{GradientMaterial, embedded_bake, spawn_gradient_overlay};
 use std::time::Duration;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Ryugu sidereal rotation period (seconds).
 const RYUGU_ROTATION_PERIOD_SECS: f64 = 7.63 * 3600.0;
-/// Approximate spin-axis direction in body/model frame.
 const RYUGU_SPIN_AXIS: Vec3 = Vec3::new(-0.043, -0.914, 0.405);
-/// Wall-clock multiplier so one turn is visible (~27 s at 1000×).
 const DISPLAY_TIME_SCALE: f64 = 1000.0;
-/// Target longest AABB edge after load (scene units).
 const RYUGU_TARGET_SIZE: f32 = 900.0;
 
 #[derive(Component)]
@@ -35,11 +34,15 @@ struct BodyClock {
     elapsed_seconds: f64,
 }
 
+#[derive(Resource, Default)]
+struct GradientSpawned(bool);
+
 #[wasm_bindgen(start)]
 pub fn run() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
         .init_resource::<BodyClock>()
+        .init_resource::<GradientSpawned>()
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: if cfg!(target_arch = "wasm32") {
@@ -67,7 +70,7 @@ pub fn run() {
                         fit_canvas_to_parent: true,
                         prevent_default_event_handling: true,
                         present_mode: PresentMode::AutoVsync,
-                        title: "Ryugu".into(),
+                        title: "Ryugu gravity gradient".into(),
                         ..default()
                     }),
                     ..default()
@@ -83,10 +86,17 @@ pub fn run() {
                 }),
         )
         .add_plugins(PanOrbitCameraPlugin)
+        .add_plugins(MaterialPlugin::<GradientMaterial>::default())
         .add_systems(Startup, setup_scene)
         .add_systems(
             Update,
-            (normalize_model_scale_system, advance_clock, rotate_ryugu).chain(),
+            (
+                normalize_model_scale_system,
+                spawn_overlay_when_ready,
+                advance_clock,
+                rotate_ryugu,
+            )
+                .chain(),
         );
 
     app.run();
@@ -95,7 +105,7 @@ pub fn run() {
 fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.85, 0.85, 1.0),
-        brightness: 250.0,
+        brightness: 180.0,
         ..default()
     });
 
@@ -125,6 +135,27 @@ fn setup_scene(mut commands: Commands, asset_server: Res<AssetServer>) {
         Transform::default(),
         RyuguMarker,
     ));
+}
+
+fn spawn_overlay_when_ready(
+    mut commands: Commands,
+    mut spawned: ResMut<GradientSpawned>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GradientMaterial>>,
+    ryugu: Query<Entity, (With<RyuguMarker>, With<ScaleNormalized>)>,
+) {
+    if spawned.0 {
+        return;
+    }
+    let Ok(parent) = ryugu.single() else {
+        return;
+    };
+    let Ok(baked) = embedded_bake() else {
+        spawned.0 = true;
+        return;
+    };
+    spawn_gradient_overlay(&mut commands, &mut meshes, &mut materials, parent, &baked);
+    spawned.0 = true;
 }
 
 fn normalize_model_scale_system(

@@ -3,3 +3,9 @@
 /node_modules
 .DS_Store
 *.pdb
+.cargo
+/vendor
+/native/.zig-cache
+/native/esa-build
+/native/esa-build2
+/native/bridge-build
