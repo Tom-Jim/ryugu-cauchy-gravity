@@ -17,7 +17,17 @@ if (!(await Bun.file(glb).exists())) {
 }
 
 const r = Bun.spawnSync(
-  ["wasm-pack", "build", `--${profile}`, "--target", "web", "--out-dir", "pkg", "--out-name", "ryugu_h_cal"],
+  [
+    "wasm-pack",
+    "build",
+    `--${profile}`,
+    "--target",
+    "web",
+    "--out-dir",
+    "pkg",
+    "--out-name",
+    "ryugu_cauchy_gravity",
+  ],
   { cwd: root, stdout: "inherit", stderr: "inherit", env: { ...process.env, RUSTC_WRAPPER: "" } },
 );
 if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);

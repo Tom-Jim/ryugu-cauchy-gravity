@@ -1,9 +1,17 @@
 {
-  "name": "ryugu-h-cal",
+  "name": "ryugu-cauchy-gravity",
   "version": "0.1.0",
   "description": "Four independent solvers for the gravity-gradient tensor of an arbitrary density field, compared on a 196,608-face model of asteroid (162173) Ryugu.",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tom-Jim/ryugu-cauchy-gravity.git"
+  },
+  "homepage": "https://github.com/Tom-Jim/ryugu-cauchy-gravity#readme",
+  "bugs": {
+    "url": "https://github.com/Tom-Jim/ryugu-cauchy-gravity/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "bun run build:dev && bun run serve",

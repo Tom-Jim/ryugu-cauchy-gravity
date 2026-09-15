@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ryugu-h-cal",
+      "name": "ryugu-cauchy-gravity",
       "devDependencies": {
         "@types/bun": "^1.4.2",
         "typescript": "^7.0.2",

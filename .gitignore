@@ -38,6 +38,16 @@ assets/records/.*
 assets/records/*.log
 
 # ---------------------------------------------------------------------------
+# Local, unpublished notes
+#
+# Measurement dumps handed to a reviewer or to another model, plus any
+# scratch analysis, stay on the machine that produced them: the figures in the
+# README are the published summary of these numbers.
+# ---------------------------------------------------------------------------
+*.local.md
+/reports/
+
+# ---------------------------------------------------------------------------
 # Environment / editor / OS
 # ---------------------------------------------------------------------------
 .env

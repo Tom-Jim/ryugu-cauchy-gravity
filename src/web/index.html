@@ -694,8 +694,8 @@
           ) {
             setStandoffUi(urlStandoff);
           }
-          const wasm = await import("/pkg/ryugu_h_cal.js");
-          await wasm.default({ module_or_path: "/pkg/ryugu_h_cal_bg.wasm" });
+          const wasm = await import("/pkg/ryugu_cauchy_gravity.js");
+          await wasm.default({ module_or_path: "/pkg/ryugu_cauchy_gravity_bg.wasm" });
           let bakeBytes = new Uint8Array(28);
           try {
             const bakeRes = await fetch(recordAsset(), { cache: "no-store" });

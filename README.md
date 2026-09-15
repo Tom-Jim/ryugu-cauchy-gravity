@@ -1,4 +1,4 @@
-# Ryugu H_Cal
+# ryugu-cauchy-gravity
 
 Four independent solvers for the **gravity-gradient tensor** (the Hessian of the
 gravitational potential) of a body with a **non-uniform interior**, compared on
@@ -73,9 +73,9 @@ comparison above is between the two GPU solvers and the voxel solver.
 
 ## Verification
 
-`rtfp-bake --selftest` runs the closed-form identities and cross-solver checks
-on GPUs that are not the bake path. Every line below is a measured number from
-the current revision.
+`rtfp-bake --selftest` (or `bun run rtfp:selftest`) checks the closed-form
+identities and cross-solver consistency independently of the record path. Every
+line below is a measured number from the current revision.
 
 | Check | Result |
 | --- | --- |
@@ -229,6 +229,8 @@ Cauchy field) and a live face-by-face comparison against the reference records.
 ## Reproducing a record
 
 ```sh
+OBJ=../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj
+
 # RT-FP, varying density, GPU
 ./target/release/rtfp-bake --obj "$OBJ" --out assets/records/rtfp_faces.bin \
   --order assets/records/.rtfp_order.bin --density assets/density/cauchy.toml \

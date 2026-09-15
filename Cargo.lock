@@ -4293,7 +4293,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ryugu_h_cal"
+name = "ryugu_cauchy_gravity"
 version = "0.1.0"
 dependencies = [
  "bevy",

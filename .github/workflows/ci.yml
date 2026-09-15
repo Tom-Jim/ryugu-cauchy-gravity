@@ -140,6 +140,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ryugu-h-cal-wasm
+          name: ryugu-cauchy-gravity-wasm
           path: pkg/
           if-no-files-found: error

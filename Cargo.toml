@@ -1,9 +1,14 @@
 [package]
-name = "ryugu_h_cal"
+name = "ryugu_cauchy_gravity"
 version = "0.1.0"
 edition = "2024"
-description = "Minimal Bevy WebGPU viewer: asteroid Ryugu only"
+description = "Bevy + WebGPU viewer for per-face gravity-gradient records of asteroid (162173) Ryugu"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Tom-Jim/ryugu-cauchy-gravity"
+homepage = "https://github.com/Tom-Jim/ryugu-cauchy-gravity"
+keywords = ["gravity-gradient", "polyhedral", "asteroid", "ryugu", "webgpu"]
+categories = ["science", "graphics", "wasm"]
 
 [lib]
 path = "src/viewer/lib.rs"
