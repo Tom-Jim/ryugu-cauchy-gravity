@@ -9,14 +9,14 @@ set(ESA_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/polyhedral-gravity-model"
 file(GLOB_RECURSE ESA_OBJS
   "${ESA_BUILD_DIR}/src/polyhedralGravity/CMakeFiles/polyhedralGravity_lib.dir/*.o")
 if (ESA_OBJS STREQUAL "")
-  message(FATAL_ERROR "ESA object files missing; build native/esa-build first")
+  message(FATAL_ERROR "ESA object files missing; run bun run esa:configure first")
 endif()
 
-add_library(esa_pg_bridge STATIC esa_bridge.cpp ${ESA_OBJS})
+add_library(esa_pg_bridge STATIC common/esa_bridge.cpp ${ESA_OBJS})
 set_source_files_properties(${ESA_OBJS} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 
 target_include_directories(esa_pg_bridge PUBLIC
-  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${ESA_SRC_DIR}/src"
 )
 target_include_directories(esa_pg_bridge SYSTEM PUBLIC
@@ -42,5 +42,12 @@ set(SPDLOG_A "${ESA_BUILD_DIR}/_deps/spdlog-build/libspdlog.a")
 
 target_link_libraries(esa_pg_bridge PUBLIC "${TETGEN_A}" "${YAML_A}" "${SPDLOG_A}")
 
-add_executable(ryugu_gradient_bake_cpp bake_main.cpp)
+add_executable(ryugu_gradient_bake_cpp werner/bake_main.cpp)
 target_link_libraries(ryugu_gradient_bake_cpp PRIVATE esa_pg_bridge)
+
+# Mascon voxel brute-force bake (Zig direct_sum ABI + Cauchy toml density).
+add_executable(ryugu_mascon_bake_cpp mascon/mascon_bake_main.cpp mascon/mascon_direct.cpp)
+target_compile_features(ryugu_mascon_bake_cpp PRIVATE cxx_std_17)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(ryugu_mascon_bake_cpp PRIVATE -O3)
+endif()

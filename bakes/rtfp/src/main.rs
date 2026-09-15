@@ -1,0 +1,662 @@
+//! RT-FP bake: ray-traced finite-part Hessian with an analytic near-field split.
+//!
+//! ```text
+//!   H(x) = ρ(x) · W(x)  +  G Σ_q ω_q T(u_q) Σ_k w_k R_k(u_q)
+//!          ^^^^^^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//!          exact uniform-   smooth remainder, 288 directions
+//!          density tensor
+//! ```
+//!
+//! `W` is the polyhedral gravity-gradient tensor of the mesh at `x` in closed
+//! form (surface integral over the 196 k faces); `R_k` is the radial finite-part
+//! integral with its logarithmic near-field part removed. See `split.rs` for the
+//! derivation, `gpu.rs` for the three WGSL pipelines that do all of the work, and
+//! `--selftest` for the checks that pin the split down against the ESA library.
+
+mod analytic;
+mod bvh;
+mod density;
+mod esa;
+mod geom;
+mod gpu;
+mod mesh;
+mod quadrature;
+mod record;
+mod split;
+mod tensor;
+
+use density::{Density, DensityMode};
+use geom::BruteTracer;
+use mesh::Mesh;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use tensor::{Sym6, frobenius};
+
+/// Gravitational constant (CODATA 2018), matching the C++ bakes in `bakes/`.
+pub const G: f64 = 6.674_30e-11;
+/// Finite-part reference length; cancels against Σω_q T(u_q) = 0 (see split.rs).
+pub const ELL0_M: f64 = 1.0;
+const KM_TO_M: f64 = 1000.0;
+/// Ray start offset above the observation point.
+const GEOM_EPS_M: f64 = 1e-9;
+const DIRS_DEFAULT: usize = 288;
+/// Observation-surface bounds, shared with the C++ bakes: mascon's record lives
+/// up to 16 m above the surface, and the viewer's slider has to reach it.
+const STANDOFF_MAX_MM: f64 = 32000.0;
+/// Observation points per GPU block (bounds the interval buffers).
+const POINTS_PER_BLOCK: usize = 2048;
+
+struct Args {
+    obj: PathBuf,
+    out: PathBuf,
+    order: PathBuf,
+    cache: PathBuf,
+    density: PathBuf,
+    mode: DensityMode,
+    standoff_mm: f64,
+    directions: usize,
+    resume: bool,
+    selftest: bool,
+}
+
+fn root() -> PathBuf {
+    // <project>/bakes/rtfp -> <project>
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate lives in <project>/bakes/rtfp")
+        .to_path_buf()
+}
+
+fn parse_args() -> Result<Args, String> {
+    let r = root();
+    let mut args = Args {
+        obj: r.join("../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj"),
+        out: r.join("assets/records/rtfp_faces.bin"),
+        order: r.join("assets/records/.rtfp_order.bin"),
+        cache: r.join("assets/records/.rtfp_w_cache.bin"),
+        density: r.join("assets/density/cauchy.toml"),
+        mode: DensityMode::Cauchy,
+        // Same start height as the other two bakes: comparable records out of the box.
+        standoff_mm: 16000.0,
+        directions: DIRS_DEFAULT,
+        resume: false,
+        selftest: false,
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
+        match a.as_str() {
+            "--obj" => args.obj = PathBuf::from(value()?),
+            "--out" => args.out = PathBuf::from(value()?),
+            "--order" => args.order = PathBuf::from(value()?),
+            "--cache" => args.cache = PathBuf::from(value()?),
+            "--density" => args.density = PathBuf::from(value()?),
+            "--mode" => args.mode = DensityMode::parse(&value()?)?,
+            "--directions" => {
+                args.directions = value()?.parse().map_err(|e| format!("--directions: {e}"))?
+            }
+            "--standoff-mm" => {
+                let mm: f64 = value()?.parse().map_err(|e| format!("--standoff-mm: {e}"))?;
+                if !(1.0..=STANDOFF_MAX_MM).contains(&mm) {
+                    return Err(format!("--standoff-mm {mm} outside 1..{STANDOFF_MAX_MM}"));
+                }
+                args.standoff_mm = mm;
+            }
+            "--resume" => args.resume = true,
+            "--selftest" => args.selftest = true,
+            "--probe-gpu" => {
+                return match gpu::Device::new() {
+                    Ok(dev) => {
+                        println!("GPU adapter: {}", dev.name());
+                        std::process::exit(0);
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            "--help" | "-h" => {
+                println!(
+                    "rtfp-bake --obj mesh.obj [--out path] [--order path] [--cache path]\n\
+                     \x20         [--density toml] [--mode cauchy|constant] [--standoff-mm 1..32000]\n\
+                     \x20         [--directions 288] [--resume] [--selftest]"
+                );
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    Ok(args)
+}
+
+fn main() -> ExitCode {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = if args.selftest { selftest(&args) } else { run(&args) };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rtfp-bake: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Unit cube (12 triangles) used as the closed-form test body.
+fn unit_cube() -> Mesh {
+    let mut mesh = Mesh::default();
+    for &(x, y, z) in &[
+        (-1.0, -1.0, -1.0),
+        (1.0, -1.0, -1.0),
+        (1.0, 1.0, -1.0),
+        (-1.0, 1.0, -1.0),
+        (-1.0, -1.0, 1.0),
+        (1.0, -1.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (-1.0, 1.0, 1.0),
+    ] {
+        mesh.xyz.extend_from_slice(&[x, y, z]);
+    }
+    for f in [
+        [0u32, 2, 1],
+        [0, 3, 2],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [2, 3, 7],
+        [2, 7, 6],
+        [1, 2, 6],
+        [1, 6, 5],
+        [3, 0, 4],
+        [3, 4, 7],
+    ] {
+        mesh.faces.extend_from_slice(&f);
+    }
+    mesh
+}
+
+/// Checks that pin the two halves of the split down against trusted references:
+/// the ESA polyhedral library (closed form), a direct point-mass sum (the same
+/// body finely subdivided), and the CPU reference tracer for the WGSL pipelines.
+fn selftest(args: &Args) -> Result<(), String> {
+    let side = 2.0f64;
+    let mesh = unit_cube();
+    let p = [0.0, 0.0, 1.0 + 0.35];
+    let ev = esa::Evaluable::new(&mesh, 1.0)?;
+    let cube_faces = analytic::precompute(&mesh);
+    for (label, q) in [
+        ("far field", p),
+        ("1 mm above face centre", [0.0, 0.0, 1.0 + 1e-3]),
+        ("1 mm above edge", [1.0, 0.0, 1.0 + 1e-3]),
+        // Exactly above the corner the point sits *in* the planes of two faces,
+        // where the surface integral itself diverges; a hair to the side is the
+        // same near-field test without the degeneracy.
+        ("1 mm above corner vertex", [1.0001, 1.0001, 1.0 + 1e-3]),
+        ("1 mm above face corner", [0.5, 0.5, 1.0 + 1e-3]),
+    ] {
+        let mine = analytic::hessian6(&cube_faces, q);
+        let lib = ev.hessian6(q)?;
+        let rel = rel6(&mine, &lib);
+        println!("  cube {label}: rel diff {rel:.3e}");
+    }
+
+    // Direct sum over a finely subdivided cube (n³ point masses).
+    let n = 24usize;
+    let cell = side / n as f64;
+    let m = cell * cell * cell;
+    let mut direct = [0.0f64; 6];
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n {
+                let y = [
+                    -side / 2.0 + (i as f64 + 0.5) * cell,
+                    -side / 2.0 + (j as f64 + 0.5) * cell,
+                    -side / 2.0 + (k as f64 + 0.5) * cell,
+                ];
+                let d = [y[0] - p[0], y[1] - p[1], y[2] - p[2]];
+                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                let r3 = r2 * r2.sqrt();
+                let gm = G * m;
+                let c = 3.0 * gm / (r3 * r2);
+                let dd = gm / r3;
+                direct[0] += c * d[0] * d[0] - dd;
+                direct[1] += c * d[1] * d[1] - dd;
+                direct[2] += c * d[2] * d[2] - dd;
+                direct[3] += c * d[0] * d[1];
+                direct[4] += c * d[0] * d[2];
+                direct[5] += c * d[1] * d[2];
+            }
+        }
+    }
+    let lib = ev.hessian6(p)?;
+    println!(
+        "  cube direct sum vs ESA: rel {:.3e} (same sign: {})",
+        rel6(&direct, &lib),
+        lib[2] * direct[2] > 0.0
+    );
+    selftest_surface_form(args)?;
+    selftest_gpu(args)
+}
+
+/// Closed form vs the ESA library on the real mesh, at every standoff the UI
+/// slider can ask for. The symmetry-axis cube cases pass even with the classic
+/// `h²`-for-`L²` slip; this is the test that catches it.
+fn selftest_surface_form(args: &Args) -> Result<(), String> {
+    let mesh =
+        Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
+    let faces = analytic::precompute(&mesh);
+    let ev = esa::Evaluable::new(&mesh, 1.0)?;
+    let nv = mesh.vertex_count();
+    let mut rng = 0x2545_F491_4F6C_DD1Du64;
+    let mut next_u32 = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as u32
+    };
+    let radius = (0..nv)
+        .map(|i| {
+            let p = mesh.vertex(i);
+            (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+        })
+        .fold(0.0f64, f64::max);
+
+    let mut samples: Vec<([f64; 3], String)> = Vec::new();
+    for mm in [1.0f64, 10.0, 100.0, 500.0] {
+        let pts = mesh.observation_points(mm * 1e-3);
+        for _ in 0..8 {
+            let i = next_u32() as usize % nv;
+            samples.push((pts[i], format!("surface@{mm}mm v{i}")));
+        }
+    }
+    for k in 0..8 {
+        let theta = 2.0 * std::f64::consts::PI * (k as f64) / 8.0;
+        let r = radius * (1.15 + 0.05 * k as f64);
+        samples.push((
+            [r * theta.cos(), 0.3 * r * theta.sin(), 0.2 * r * theta.cos()],
+            format!("free r={r:.1}m"),
+        ));
+    }
+
+    let mut worst = (0.0f64, String::new());
+    let mut errs = Vec::new();
+    for (x, label) in samples.iter() {
+        let lib = ev.hessian6(*x)?;
+        let mine = analytic::hessian6(&faces, *x);
+        let rel = rel6(&mine, &lib);
+        errs.push(rel);
+        if rel > worst.0 {
+            worst = (rel, label.clone());
+        }
+    }
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!(
+        "  closed form vs ESA on the real mesh: {} samples, median {:.3e}, worst {:.3e} ({})",
+        samples.len(),
+        errs[errs.len() / 2],
+        worst.0,
+        worst.1
+    );
+    if worst.0 > 1e-6 {
+        return Err(format!(
+            "closed form disagrees with the ESA library by {:.3e} ({})",
+            worst.0, worst.1
+        ));
+    }
+    Ok(())
+}
+
+/// WGSL pipelines against the references that do not share their code:
+/// `analytic.rs` (closed form, itself checked against ESA) for the tensor, and a
+/// brute-force f64 tracer + `split.rs` for the ray/remainder chain. The BVH
+/// traversal the shader uses is checked separately, by walking the same flat
+/// arrays from Rust.
+fn selftest_gpu(args: &Args) -> Result<(), String> {
+    let mesh =
+        Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
+    let faces = analytic::precompute(&mesh);
+    let bvh = bvh::Bvh::build(&mesh);
+    let radius = body_radius(&mesh);
+    let t_max = radius * 4.0;
+    let dirs = quadrature::directions(args.directions);
+    let density = match args.mode {
+        DensityMode::Cauchy => Density::from_toml(&args.density)?,
+        DensityMode::Constant => Density::homogeneous(1190.0),
+    };
+    let kernels = density.kernels();
+    let all = mesh.observation_points(1e-3);
+    let nv = mesh.vertex_count();
+    let sample: Vec<[f64; 3]> = (0..192).map(|i| all[i * nv / 192]).collect();
+
+    let device = gpu::Device::new()?;
+    let scene = gpu::Scene::new(
+        device,
+        &mesh,
+        &bvh,
+        &faces,
+        &sample,
+        &dirs,
+        sample.len(),
+        kernels.len(),
+    );
+
+    // 1. Analytic tensor: WGSL (f32) vs the f64 closed form.
+    let w_gpu = scene.analytic_tensors()?;
+    let mut errs: Vec<f64> = sample
+        .iter()
+        .enumerate()
+        .map(|(i, p)| rel6(&analytic::hessian6(&faces, *p), &w_gpu[i]))
+        .collect();
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let worst_w = errs[errs.len() - 1];
+    println!(
+        "  WGSL analytic vs f64 closed form: median {:.3e}, worst {:.3e}",
+        errs[errs.len() / 2],
+        worst_w
+    );
+
+    // 2. Ray traversal: the shader's BVH layout, walked from Rust, vs brute force.
+    let brute = BruteTracer::new(&mesh);
+    let mut hits = Vec::new();
+    let mut bvh_hits = Vec::new();
+    let mut worst_ray = 0.0f64;
+    for (i, p) in sample.iter().enumerate().take(32) {
+        for (q, (u, _)) in dirs.iter().enumerate() {
+            let d = [-u[0], -u[1], -u[2]];
+            brute.crossings(*p, d, GEOM_EPS_M, t_max, &mut hits);
+            geom::bvh_crossings(&bvh, &mesh, *p, d, GEOM_EPS_M, t_max, &mut bvh_hits);
+            if hits.len() != bvh_hits.len() {
+                worst_ray = f64::INFINITY;
+                println!("    point {i} direction {q}: {} crossings, BVH found {}", hits.len(), bvh_hits.len());
+                continue;
+            }
+            for (a, b) in hits.iter().zip(bvh_hits.iter()) {
+                worst_ray = worst_ray.max((a - b).abs() / a.abs().max(1e-30));
+            }
+        }
+    }
+    println!("  BVH traversal vs brute force: worst crossing rel {worst_ray:.3e}");
+
+    // 3. Remainder: full WGSL chain (probe + rays + remainder) vs f64 brute force.
+    let rem_gpu = scene.block_remainder(&sample, &dirs, kernels, t_max as f32, GEOM_EPS_M as f32)?;
+    let mut errs: Vec<f64> = Vec::new();
+    let mut worst = (0.0f64, 0usize);
+    for (i, p) in sample.iter().enumerate() {
+        brute.crossings(*p, [1.0, 0.0, 0.0], GEOM_EPS_M, t_max, &mut hits);
+        let inside = hits.len() % 2 == 1;
+        let mut acc = [0.0f64; 6];
+        for (u, w) in &dirs {
+            brute.crossings(*p, [-u[0], -u[1], -u[2]], GEOM_EPS_M, t_max, &mut hits);
+            let slots = split::intervals(&hits, inside);
+            let s = split::remainder_scalar(kernels, *p, *u, &slots);
+            tensor::add_tensor_term(&mut acc, u, G * *w * s);
+        }
+        let rel = rel6(&acc, &rem_gpu[i]);
+        errs.push(rel);
+        if rel > worst.0 {
+            worst = (rel, i);
+        }
+    }
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let over = errs.iter().filter(|e| **e > 5e-2).count();
+    println!(
+        "  WGSL rays+remainder vs f64 brute force: median {:.3e}, p90 {:.3e}, worst {:.3e} ({over} of {} >5%)",
+        errs[errs.len() / 2],
+        errs[errs.len() * 9 / 10],
+        worst.0,
+        errs.len()
+    );
+    // A handful of rays graze a mesh vertex, where a crossing sits exactly on the
+    // f32/f64 hit tolerance and can flip; the rest of the chain has to be tight.
+    let median_rem = errs[errs.len() / 2];
+    if worst_w > 1e-2 || worst_ray > 1e-6 || median_rem > 1e-3 || worst.0 > 2e-1 {
+        return Err("GPU pipelines disagree with the reference".into());
+    }
+    Ok(())
+}
+
+fn body_radius(mesh: &Mesh) -> f64 {
+    (0..mesh.vertex_count())
+        .map(|i| {
+            let p = mesh.vertex(i);
+            (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+        })
+        .fold(0.0f64, f64::max)
+}
+
+fn rel6(a: &Sym6, b: &Sym6) -> f64 {
+    let d = frobenius(&[a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3], a[4] - b[4], a[5] - b[5]]);
+    d / frobenius(b).max(1e-300)
+}
+
+/// Uniform-density analytic tensor per observation point, cached per standoff.
+fn analytic_tensors(
+    args: &Args,
+    scene: &gpu::Scene,
+    points: &[[f64; 3]],
+) -> Result<Vec<Sym6>, String> {
+    if let Ok(bytes) = std::fs::read(&args.cache) {
+        if let Some(cached) = decode_cache(&bytes, points.len(), args.standoff_mm) {
+            println!("analytic tensor cache hit: {} points @ {} mm", points.len(), args.standoff_mm);
+            return Ok(cached);
+        }
+    }
+    println!("analytic tensor: {} points × faces on the GPU", points.len());
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let tensors = scene.analytic_tensors()?;
+    if let Some(bad) = tensors.iter().flatten().find(|v| !v.is_finite()) {
+        return Err(format!("analytic tensor produced a non-finite component ({bad})"));
+    }
+    if let Err(e) = std::fs::write(&args.cache, encode_cache(&tensors, args.standoff_mm)) {
+        eprintln!("warning: analytic tensor cache not written: {e}");
+    }
+    Ok(tensors)
+}
+
+fn encode_cache(t: &[Sym6], standoff_mm: f64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(24 + t.len() * 48);
+    out.extend_from_slice(b"RTFW");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&standoff_mm.to_le_bytes());
+    out.extend_from_slice(&(t.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for h in t {
+        for v in h {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    out
+}
+
+fn decode_cache(bytes: &[u8], n_points: usize, standoff_mm: f64) -> Option<Vec<Sym6>> {
+    if bytes.len() < 24 || &bytes[0..4] != b"RTFW" {
+        return None;
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+    let mm = f64::from_le_bytes(bytes[8..16].try_into().ok()?);
+    let n = u32::from_le_bytes(bytes[16..20].try_into().ok()?) as usize;
+    if version != 2 || n != n_points || (mm - standoff_mm).abs() > 1e-12 {
+        return None;
+    }
+    if bytes.len() < 24 + n * 48 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let base = 24 + i * 48;
+        let mut h = [0.0f64; 6];
+        for (k, slot) in h.iter_mut().enumerate() {
+            *slot = f64::from_le_bytes(bytes[base + k * 8..base + k * 8 + 8].try_into().ok()?);
+        }
+        out.push(h);
+    }
+    Some(out)
+}
+
+fn run(args: &Args) -> Result<(), String> {
+    let standoff_m = args.standoff_mm * 1e-3;
+    let mesh =
+        Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
+    let nv = mesh.vertex_count();
+    let nf = mesh.face_count();
+    println!("observation standoff: {:.3} mm", args.standoff_mm);
+    println!("mesh: {nv} vertices, {nf} faces (meters)");
+    println!("mode={:?} directions={}", args.mode, args.directions);
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    let points = mesh.observation_points(standoff_m);
+    let faces = analytic::precompute(&mesh);
+    let bvh = bvh::Bvh::build(&mesh);
+    println!("bvh: {} nodes, depth {}", bvh.node_count(), bvh.depth);
+    let radius = body_radius(&mesh);
+    let t_min = GEOM_EPS_M as f32;
+    let t_max = (radius * 4.0) as f32;
+
+    let density = match args.mode {
+        DensityMode::Cauchy => Density::from_toml(&args.density)?,
+        DensityMode::Constant => Density::homogeneous(1190.0),
+    };
+    let dirs = quadrature::directions(args.directions);
+    let kernels = density.kernels();
+    println!("quadrature: {} directions (exact: Σω=4π, ΣωT=0)", dirs.len());
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    let device = gpu::Device::new()?;
+    let scene = gpu::Scene::new(
+        device,
+        &mesh,
+        &bvh,
+        &faces,
+        &points,
+        &dirs,
+        POINTS_PER_BLOCK,
+        kernels.len(),
+    );
+    let w = analytic_tensors(args, &scene, &points)?;
+
+    // Which vertices the record still needs (resume).
+    let mut record = if args.resume {
+        let existing = record::Record::open_resume(&args.out, nf)
+            .map_err(|e| format!("{}: {e}", args.out.display()))?;
+        match existing {
+            Some(r) if (r.standoff_mm - args.standoff_mm as f32).abs() < 1e-3 => {
+                println!("RESUME from {} / {} faces", r.n_done, nf);
+                r
+            }
+            _ => record::Record::create(&args.out, nf, args.standoff_mm as f32)
+                .map_err(|e| format!("{}: {e}", args.out.display()))?,
+        }
+    } else {
+        record::Record::create(&args.out, nf, args.standoff_mm as f32)
+            .map_err(|e| format!("{}: {e}", args.out.display()))?
+    };
+    let mut needed = vec![false; nv];
+    let mut todo = Vec::new();
+    for f in 0..nf {
+        if !record.scalars[f].is_finite() {
+            todo.push(f as u32);
+            for v in mesh.face(f) {
+                needed[v as usize] = true;
+            }
+        }
+    }
+    println!(
+        "evaluating {} vertices ({} faces remaining)",
+        needed.iter().filter(|b| **b).count(),
+        todo.len()
+    );
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    // Per-vertex tensors, not scalars: the face value has to be the norm of the
+    // three-vertex-averaged tensor, exactly like `bakes/werner/bake_main.cpp` and
+    // `bakes/mascon/mascon_bake_main.cpp` do. Averaging the three per-vertex norms
+    // instead is a *different* (always larger, by the triangle inequality)
+    // quantity — it was worth 1.9 % median against the Werner record.
+    let mut vertex_h = vec![[f64::NAN; 6]; nv];
+    if !todo.is_empty() {
+        for lo in (0..nv).step_by(POINTS_PER_BLOCK) {
+            let hi = (lo + POINTS_PER_BLOCK).min(nv);
+            let remainder =
+                scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?;
+            for (i, rem) in remainder.into_iter().enumerate() {
+                let vi = lo + i;
+                if !needed[vi] {
+                    continue;
+                }
+                let rho = density.rho(&points[vi], args.mode);
+                let mut h = w[vi];
+                for t in h.iter_mut() {
+                    *t *= rho;
+                }
+                for (t, r) in h.iter_mut().zip(rem.iter()) {
+                    *t += r;
+                }
+                vertex_h[vi] = h;
+            }
+            println!("PROGRESS_R {hi} {nv}");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+    }
+
+    // Progressive face write in the saved (shuffled) order, like the other bakes.
+    let saved_order =
+        record::load_order(&args.order, nf).map_err(|e| format!("{}: {e}", args.order.display()))?;
+    let order = match saved_order {
+        Some(o) => o,
+        None => {
+            let mut o: Vec<u32> = (0..nf as u32).collect();
+            let mut rng = 0x9E37_79B9_7F4A_7C15u64
+                ^ (args.standoff_mm as u64)
+                ^ (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as u64)
+                    .unwrap_or(0));
+            for i in (1..o.len()).rev() {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                o.swap(i, (rng as usize) % (i + 1));
+            }
+            record::write_order(&args.order, &o)
+                .map_err(|e| format!("{}: {e}", args.order.display()))?;
+            o
+        }
+    };
+    let mut step = 0usize;
+    for f in order {
+        let fi = f as usize;
+        if record.scalars[fi].is_finite() {
+            continue;
+        }
+        let face = mesh.face(fi);
+        let mut hbar = [0.0f64; 6];
+        for k in 0..6 {
+            hbar[k] = (vertex_h[face[0] as usize][k]
+                + vertex_h[face[1] as usize][k]
+                + vertex_h[face[2] as usize][k])
+                / 3.0;
+        }
+        let s = frobenius(&hbar) as f32;
+        record.set_face(fi, s).map_err(|e| format!("{}: {e}", args.out.display()))?;
+        step += 1;
+        if step % 256 == 0 || record.n_done == nf {
+            record.flush_header().map_err(|e| format!("{}: {e}", args.out.display()))?;
+            println!("faces {} / {}", record.n_done, nf);
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+    }
+    record.flush_header().map_err(|e| format!("{}: {e}", args.out.display()))?;
+    println!(
+        "wrote {} dense face scalars to {} (s_min={:e} s_max={:e})",
+        nf,
+        args.out.display(),
+        record.s_min,
+        record.s_max
+    );
+    Ok(())
+}

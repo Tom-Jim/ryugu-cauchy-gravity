@@ -6,15 +6,18 @@ description = "Minimal Bevy WebGPU viewer: asteroid Ryugu only"
 license = "MIT"
 
 [lib]
+path = "src/viewer/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "webgpu"] }
 bevy_panorbit_camera = "0.35"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["console", "Window", "Document"] }
+web-sys = { version = "0.3", features = ["console", "Window", "Document", "Performance"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 console_error_panic_hook = "0.1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [profile.dev]
 opt-level = 1

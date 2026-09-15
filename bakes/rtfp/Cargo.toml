@@ -1,0 +1,21 @@
+[package]
+name = "rtfp-bake"
+version = "0.1.0"
+edition = "2021"
+description = "Native RT-FP bake: analytic polyhedral near-field + ray-traced deviation quadrature"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+wgpu = "29"
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+
+[profile.dev]
+opt-level = 2

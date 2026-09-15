@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>Ryugu</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #050508; color: #e8e6e3; font-family: ui-sans-serif, system-ui, sans-serif; }
+    #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
+    #msg { display: none; place-items: center; position: fixed; inset: 0; padding: 2rem; text-align: center; background: rgba(5,5,8,.72); z-index: 5; }
+    #algo-bar {
+      position: fixed; top: 1rem; right: 1rem; z-index: 4;
+      display: flex; gap: .5rem; align-items: center;
+      background: rgba(12,12,18,.82); border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px; padding: .45rem .6rem .45rem .8rem;
+      backdrop-filter: blur(8px); font-size: 12px;
+    }
+    #algo-btn {
+      border: 0; border-radius: 8px; padding: .35rem .7rem; cursor: pointer;
+      color: #0b0b10; background: #9bb7ff; font-weight: 650;
+    }
+    #panel {
+      position: fixed; left: 1rem; bottom: 1rem; z-index: 3;
+      width: min(420px, calc(100vw - 2rem));
+      background: rgba(12,12,18,.82); border: 1px solid rgba(255,255,255,.12);
+      border-radius: 12px; padding: .85rem 1rem; backdrop-filter: blur(8px);
+    }
+    #panel h1 { margin: 0 0 .55rem; font-size: 14px; font-weight: 650; letter-spacing: .02em; }
+    #panel .row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .55rem; }
+    #bake-btn, #resume-btn, #reload-btn, #dens-btn {
+      border: 0; border-radius: 8px; padding: .4rem .75rem; cursor: pointer; font-weight: 650; font-size: 12px;
+    }
+    #bake-btn { color: #0b0b10; background: #e8b86d; }
+    #resume-btn { color: #0b0b10; background: #7ec8a3; }
+    #reload-btn { color: #e8e6e3; background: rgba(255,255,255,.12); }
+    #dens-btn { color: #0b0b10; background: #b8a0ff; }
+    #bake-btn:disabled, #resume-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    #bar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-bottom: .45rem; }
+    #bar-fill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #6b4cff, #ff7a59); }
+    #status { font-size: 12px; opacity: .9; line-height: 1.35; }
+    #standoff {
+      position: fixed; top: 50%; right: 1rem; transform: translateY(-50%); z-index: 4;
+      display: flex; flex-direction: column; align-items: center; gap: .45rem;
+      background: rgba(12,12,18,.82); border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px; padding: .6rem .5rem; backdrop-filter: blur(8px);
+      font-size: 11px; color: #e8e6e3;
+    }
+    #standoff-val { font-weight: 650; font-variant-numeric: tabular-nums; }
+    #standoff-range {
+      writing-mode: vertical-lr; direction: rtl;
+      width: 22px; height: 200px; margin: 0; accent-color: #9bb7ff; cursor: pointer;
+    }
+    #standoff-record { font-size: 10px; opacity: .68; white-space: nowrap; }
+    #standoff-title { font-size: 10px; opacity: .68; }
+  </style>
+</head>
+<body>
+  <canvas id="bevy"></canvas>
+  <div id="msg"></div>
+  <div id="algo-bar">
+    <span id="algo-label">Werner 常密度</span>
+    <button id="algo-btn" type="button">切换算法</button>
+  </div>
+  <div id="standoff">
+    <span id="standoff-val">1.0 mm</span>
+    <input id="standoff-range" type="range" min="0" max="1000" step="1" value="0"
+           aria-label="观测面高度（mm）" />
+    <span id="standoff-title">观测面高度</span>
+    <span id="standoff-record"></span>
+  </div>
+  <div id="panel">
+    <h1>Werner 常密度 · 全网格逐面重力梯度</h1>
+    <div class="row">
+      <button id="bake-btn" type="button">重新计算</button>
+      <button id="resume-btn" type="button" hidden>继续计算</button>
+      <button id="dens-btn" type="button" hidden>切换常密度</button>
+      <button id="reload-btn" type="button" hidden>刷新着色</button>
+    </div>
+    <div id="bar"><i id="bar-fill"></i></div>
+    <div id="status">读取状态…</div>
+    <div id="compare" hidden style="margin-top:.45rem;font-size:12px;opacity:.92;line-height:1.4;"></div>
+  </div>
+  <script type="module">
+    const ALGO_KEY = "ryugu_algo";
+    const msg = document.getElementById("msg");
+    const panel = document.getElementById("panel");
+    const algoBtn = document.getElementById("algo-btn");
+    const algoLabel = document.getElementById("algo-label");
+    const bakeBtn = document.getElementById("bake-btn");
+    const resumeBtn = document.getElementById("resume-btn");
+    const densBtn = document.getElementById("dens-btn");
+    const reloadBtn = document.getElementById("reload-btn");
+    const barFill = document.getElementById("bar-fill");
+    const statusEl = document.getElementById("status");
+    const compareEl = document.getElementById("compare");
+    const standoffRange = document.getElementById("standoff-range");
+    const standoffVal = document.getElementById("standoff-val");
+    const standoffRecord = document.getElementById("standoff-record");
+
+    // Observation-surface height.
+    //
+    // Two useful bands sit four orders of magnitude apart: the exact solvers
+    // (Werner / RT-FP) are sharp at 1 mm, while mascon is a voxel direct sum
+    // with 7.9 m cells and is ~250 % off at 1 mm. One linear scale cannot cover
+    // both, so *every* algorithm gets the same two-segment vertical track:
+    //
+    //   lower half (slider 0…500)    →      1 mm …   500 mm
+    //   upper half (slider 500…1000) →   1 m      …    32 m
+    //
+    // The slider stores that position, never millimetres; `standoffMm` stays the
+    // single source of truth and `mmToPos`/`posToMm` are exact inverses inside
+    // each half.
+    //
+    // Every algorithm starts two mascon cells out (16 m): that is the height at
+    // which mascon's residual against RT-FP is 0.76 % median with colours as
+    // continuous as Werner's, and starting all three at one height is what makes
+    // the record-by-record comparison below meaningful.
+    const STANDOFF_LOW_MM = { min: 1, max: 500 };
+    const STANDOFF_HIGH_MM = { min: 1000, max: 32000 };
+    const STANDOFF_POS_MAX = 1000;
+    const STANDOFF_POS_SPLIT = STANDOFF_POS_MAX / 2;
+    const STANDOFF_MIN_MM = STANDOFF_LOW_MM.min;
+    const STANDOFF_MAX_MM = STANDOFF_HIGH_MM.max;
+    /** Start height for every algorithm — shared so the records are comparable. */
+    const STANDOFF_DEFAULT_MM = 16000;
+    let standoffMm = STANDOFF_DEFAULT_MM;
+    let standoffDragging = false;
+    // After a manual height change the record on disk is stale for a moment (the
+    // sweep restarts a frame later, and a checkpoint queued just before the change
+    // may land after the clear). Do not let it drag the slider back.
+    let standoffHoldUntil = 0;
+
+    const clampStandoff = (mm) => {
+      const v = Number(mm);
+      if (!Number.isFinite(v)) return STANDOFF_DEFAULT_MM;
+      return Math.min(STANDOFF_MAX_MM, Math.max(STANDOFF_MIN_MM, v));
+    };
+    const fmtMm = (mm) => (mm >= 1000
+      ? `${(mm / 1000).toFixed(2)} m`
+      : mm >= 10
+        ? `${mm.toFixed(0)} mm`
+        : `${mm.toFixed(1)} mm`);
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+
+    /** Slider position (0…1000) → observation height in mm. */
+    function posToMm(pos) {
+      const p = Math.min(STANDOFF_POS_MAX, Math.max(0, Number(pos) || 0));
+      return p <= STANDOFF_POS_SPLIT
+        ? lerp(STANDOFF_LOW_MM.min, STANDOFF_LOW_MM.max, p / STANDOFF_POS_SPLIT)
+        : lerp(
+          STANDOFF_HIGH_MM.min,
+          STANDOFF_HIGH_MM.max,
+          (p - STANDOFF_POS_SPLIT) / STANDOFF_POS_SPLIT,
+        );
+    }
+
+    /** Observation height in mm → slider position (0…1000). */
+    function mmToPos(mm) {
+      const v = clampStandoff(mm);
+      if (v <= STANDOFF_LOW_MM.max) {
+        return Math.round(
+          lerp(0, STANDOFF_POS_SPLIT, (v - STANDOFF_LOW_MM.min) / (STANDOFF_LOW_MM.max - STANDOFF_LOW_MM.min)),
+        );
+      }
+      const hi = Math.max(v, STANDOFF_HIGH_MM.min);
+      return Math.round(
+        lerp(
+          STANDOFF_POS_SPLIT,
+          STANDOFF_POS_MAX,
+          (hi - STANDOFF_HIGH_MM.min) / (STANDOFF_HIGH_MM.max - STANDOFF_HIGH_MM.min),
+        ),
+      );
+    }
+
+    function setStandoffUi(mm) {
+      standoffMm = clampStandoff(mm);
+      const pos = String(mmToPos(standoffMm));
+      if (standoffRange.value !== pos) standoffRange.value = pos;
+      standoffVal.textContent = fmtMm(standoffMm);
+    }
+
+    /** Adopt the height a record on disk was computed at (never mid-drag). */
+    function syncStandoffFromRecord(mm) {
+      const v = Number(mm);
+      if (standoffDragging || Date.now() < standoffHoldUntil) return;
+      if (!Number.isFinite(v) || v < STANDOFF_MIN_MM || v > STANDOFF_MAX_MM) return;
+      if (Math.abs(v - standoffMm) < 1e-6) return;
+      setStandoffUi(v);
+    }
+
+    function setStandoffRecordLabel(mm) {
+      const v = Number(mm);
+      standoffRecord.textContent =
+        Number.isFinite(v) && v >= STANDOFF_MIN_MM && v <= STANDOFF_MAX_MM ? `记录 ${fmtMm(v)}` : "";
+    }
+
+    /**
+     * Adopt the height the record on disk was computed at, but stay quiet for a
+     * moment after a manual change: the old record is still on disk for a poll
+     * or two, and it would label the new height with the old one.
+     */
+    function syncStandoffRecordLabel(mm) {
+      if (standoffDragging || Date.now() < standoffHoldUntil) return;
+      setStandoffRecordLabel(mm);
+    }
+
+    setStandoffUi(standoffMm);
+
+    function getAlgo() {
+      const q = new URLSearchParams(location.search).get("algo");
+      if (q === "model" || q === "werner" || q === "mascon") return q;
+      const saved = localStorage.getItem(ALGO_KEY);
+      return saved === "model" || saved === "werner" || saved === "mascon" ? saved : "werner";
+    }
+
+    function switchAlgo() {
+      const cur = getAlgo();
+      const next = cur === "werner" ? "mascon" : cur === "mascon" ? "model" : "werner";
+      localStorage.setItem(ALGO_KEY, next);
+      const u = new URL(location.href);
+      u.searchParams.set("algo", next);
+      u.searchParams.delete("fresh");
+      location.assign(u.toString());
+    }
+
+    const algo = getAlgo();
+    localStorage.setItem(ALGO_KEY, algo);
+    // Every algorithm starts at the shared height.
+    setStandoffUi(STANDOFF_DEFAULT_MM);
+    const isWerner = algo === "werner";
+    const isMascon = algo === "mascon";
+    const isRtfp = algo === "model";
+    // Every algorithm now bakes to disk with the same RHGF v5 record and shares
+    // one display path (same face indexing, same colour window), so the only
+    // per-algorithm state left is the endpoint, the asset and RT-FP's density mode.
+    const isBake = true;
+    const bakeApi = isMascon ? "/api/mascon" : isRtfp ? "/api/rtfp" : "/api/bake";
+    const bakeAsset = isMascon
+      ? "/assets/records/mascon_faces.bin"
+      : isRtfp
+        ? "/assets/records/rtfp_faces.bin"
+        : "/assets/records/gradient_faces.bin";
+    let densityMode = "cauchy"; // RT-FP only: cauchy (toml kernels) | constant
+    const algoNames = {
+      werner: "Werner 常密度",
+      mascon: "Mascon 体素",
+      model: "RT-FP · Cauchy矿脉",
+    };
+    const algoNextLabel = {
+      werner: "切换到 Mascon 体素",
+      mascon: "切换到 RT-FP",
+      model: "切换到 Werner 常密度",
+    };
+    algoLabel.textContent = algoNames[algo];
+    algoBtn.textContent = algoNextLabel[algo];
+    panel.hidden = false;
+    if (isMascon) {
+      document.querySelector("#panel h1").textContent =
+        "Mascon 体素 · Cauchy密度 · 暴力 direct-sum";
+      bakeBtn.hidden = false;
+      bakeBtn.textContent = "重新计算";
+      resumeBtn.hidden = true;
+      densBtn.hidden = true;
+      reloadBtn.hidden = true;
+      statusEl.textContent = "读取 Mascon 状态…";
+    } else if (isRtfp) {
+      document.querySelector("#panel h1").textContent = "RT-FP · 完整网格软件光追（Cauchy）";
+      bakeBtn.hidden = false;
+      bakeBtn.textContent = "重新计算";
+      resumeBtn.hidden = true;
+      densBtn.hidden = false;
+      densBtn.textContent = "切换到常密度 ρ₀";
+      reloadBtn.hidden = true;
+      statusEl.textContent = "RT-FP 初始化…";
+    }
+    algoBtn.addEventListener("click", switchAlgo);
+
+    const show = (t) => {
+      console.error(t);
+      msg.style.display = "grid";
+      msg.textContent = t;
+    };
+    window.addEventListener("unhandledrejection", (e) => {
+      console.warn("[unhandledrejection]", String(e.reason || "").slice(0, 500));
+    });
+    window.addEventListener("error", (e) => {
+      console.warn("[window.error]", String(e.message || e.error || "").slice(0, 500));
+    });
+
+    function renderStatus(s) {
+      const pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
+      barFill.style.width = `${pct}%`;
+      let line = s.message || s.state;
+      if (s.total > 0) line += ` · ${pct.toFixed(1)}%`;
+      if (s.error) line += ` · ${s.error}`;
+      if (Number.isFinite(Number(s.standoffMm))) {
+        syncStandoffRecordLabel(Number(s.standoffMm));
+        syncStandoffFromRecord(Number(s.standoffMm));
+      }
+      if (window.__bakeScalarStats) {
+        const st = window.__bakeScalarStats;
+        line += ` · ‖H‖_F min=${st.min} max=${st.max} std/mean=${st.cv} · 显示[${st.lo},${st.hi}] ${st.mode}`;
+      }
+      statusEl.textContent = line;
+      const running = s.state === "running";
+      bakeBtn.disabled = running;
+      bakeBtn.textContent = running ? "计算中…" : "重新计算";
+      resumeBtn.hidden = !(s.canResume && !running);
+      resumeBtn.disabled = running || !s.canResume;
+      reloadBtn.hidden = s.state !== "done";
+      if (isRtfp) {
+        // Density mode lives on the server (it decides the kernel set), so the
+        // button label follows the status rather than local state.
+        densityMode = s.densityMode === "constant" ? "constant" : "cauchy";
+        densBtn.hidden = false;
+        densBtn.disabled = running;
+        densBtn.textContent =
+          densityMode === "constant" ? "切换到 Cauchy（toml）" : "切换到常密度 ρ₀";
+        document.querySelector("#panel h1").textContent =
+          densityMode === "constant" ? "RT-FP · 常密度 ρ₀=1190 · 全 GPU" : "RT-FP · Cauchy矿脉 · 全 GPU";
+        algoLabel.textContent = densityMode === "constant" ? "RT-FP · 常密度" : "RT-FP · Cauchy矿脉";
+        updateAlgorithmCompare(s, s);
+      }
+      if (s.state === "done") {
+        if (!window.__bakeScalarStats) refreshBakeScalarStats();
+      } else {
+        window.__bakeScalarStats = null;
+      }
+    }
+
+    async function refreshBakeScalarStats() {
+      try {
+        const res = await fetch(`${bakeAsset}?t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const buf = await res.arrayBuffer();
+        const parsed = parseWernerScalars(buf);
+        if (!parsed) return;
+        const vals = [];
+        for (let i = 0; i < parsed.total; i++) {
+          const v = parsed.scalars[i];
+          if (Number.isFinite(v)) vals.push(v);
+        }
+        if (!vals.length) return;
+        vals.sort((a, b) => a - b);
+        const n = vals.length;
+        const min = vals[0];
+        const max = vals[n - 1];
+        const mean = vals.reduce((a, b) => a + b, 0) / n;
+        let varsum = 0;
+        for (const v of vals) varsum += (v - mean) * (v - mean);
+        const std = Math.sqrt(varsum / n);
+        const lo = vals[Math.round((n - 1) * 0.02)];
+        const med = vals[Math.round((n - 1) * 0.5)];
+        const hi = vals[Math.round((n - 1) * 0.98)];
+        // Same rule as the renderer (Werner / Mascon / RT-FP share one window):
+        // asinh only when the median face would sit in the bottom eighth of a
+        // linear ramp — i.e. when the body would collapse onto one colour.
+        const heavy = lo > 0 && hi > lo && (med - lo) / (hi - lo) < 0.125;
+        const fmt = (x) => {
+          if (!Number.isFinite(x)) return "?";
+          const ax = Math.abs(x);
+          return ax >= 1e-2 && ax < 1e3 ? x.toPrecision(3) : x.toExponential(2);
+        };
+        window.__bakeScalarStats = {
+          min: fmt(min),
+          max: fmt(max),
+          cv: mean > 0 ? (std / mean).toFixed(2) : "?",
+          lo: fmt(lo),
+          hi: fmt(hi),
+          mode: heavy ? "asinh" : "线性",
+        };
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function parseWernerScalars(buf) {
+      const dv = new DataView(buf);
+      if (buf.byteLength < 28) return null;
+      if (dv.getUint32(0, true) !== 0x52484746) return null;
+      // v5 keeps the scalars at 28 + 4·total; an older header would shift every
+      // value by one float and silently produce a bogus comparison.
+      if (dv.getUint32(4, true) !== 5) return null;
+      const total = dv.getUint32(8, true);
+      if (buf.byteLength < 28 + total * 4) return null;
+      // Offset 16 is the reserved slot holding the observation height (mm).
+      const standoffMm = dv.getFloat32(16, true);
+      const sMin = dv.getFloat32(20, true);
+      const sMax = dv.getFloat32(24, true);
+      const scalars = new Float32Array(total);
+      for (let i = 0; i < total; i++) scalars[i] = dv.getFloat32(28 + i * 4, true);
+      return { scalars, sMin, sMax, total, standoffMm };
+    }
+
+    /**
+     * Face-by-face difference between two records.
+     *
+     * The tolerance has to be *relative*: ‖H‖_F is ~1e-6, so the old absolute
+     * `|Δ| > 1e-3` test could never fire and the panel cheered "0 differences,
+     * 0.00%" for records that actually disagree by 30 % per face.
+     */
+    function scalarDiffStats(a, b, relEps = 0.05) {
+      const n = Math.min(a.total, b.total);
+      if (n === 0) return null;
+      const rels = [];
+      for (let i = 0; i < n; i++) {
+        const sa = a.scalars[i];
+        const sb = b.scalars[i];
+        if (!Number.isFinite(sa) || !Number.isFinite(sb)) continue;
+        rels.push(Math.abs(sa - sb) / Math.max(Math.abs(sa), Math.abs(sb), 1e-300));
+      }
+      if (rels.length === 0) return null;
+      rels.sort((x, y) => x - y);
+      const at = (q) => rels[Math.min(rels.length - 1, Math.round((rels.length - 1) * q))];
+      return {
+        compared: rels.length,
+        total: n,
+        relEps,
+        over: rels.filter((r) => r > relEps).length,
+        med: at(0.5),
+        max: rels[rels.length - 1],
+      };
+    }
+
+    /**
+     * The two records an RT-FP run is measured against, in fixed order:
+     * Werner is the *constant*-density solver (ρ₀ = 1190) and Mascon is the
+     * *Cauchy*-density one (assets/density/cauchy.toml on 7.9 m voxels). Showing
+     * both on both RT-FP pages is the point: it says how far each density model
+     * sits from its own reference, whichever one is currently baked.
+     */
+    const COMPARE_REFS = [
+      { name: "Werner", kind: "常密度", asset: "/assets/records/gradient_faces.bin", api: "/api/bake/status" },
+      { name: "Mascon", kind: "柯西密度", asset: "/assets/records/mascon_faces.bin", api: "/api/mascon/status" },
+    ];
+
+    /** Face-by-face comparison only means something at one observation height. */
+    function standoffCompareNote(refMm, rtfpMm) {
+      const rv = Number(refMm);
+      const tv = Number(rtfpMm);
+      // 1 mm – 32 m: mascon's record legitimately lives above the 500 mm that
+      // bounds the other two, and "height mismatch" has to stay detectable.
+      const hasR = Number.isFinite(rv) && rv >= 1 && rv <= 32000;
+      const hasT = Number.isFinite(tv) && tv >= 1 && tv <= 32000;
+      if (!hasR && !hasT) return "";
+      const parts = [];
+      if (hasR) parts.push(`观测面 ${fmtMm(rv)}`);
+      if (hasT) parts.push(`RT-FP ${fmtMm(tv)}`);
+      const mismatch = hasR && hasT && Math.abs(rv - tv) > 1e-3;
+      return ` · ${parts.join(" / ")}${mismatch ? "（高度不一致）" : ""}`;
+    }
+
+    /**
+     * Every bake path shares the same observation surface and the same face
+     * indexing: ‖H‖_F at each mesh vertex (`vertex + n_vertex · h`), averaged
+     * over the face's three vertices. Face f is the same triangle in all
+     * records, so what is left below is solver difference, not sampling.
+     */
+    function samplingNote() {
+      return " · 采样口径一致（三顶点均值 + 顶点法线）";
+    }
+
+    let compareBusy = false;
+    // Reading both records is ~1–2 MB of scalars; only redo the comparison when
+    // something it depends on moved (mode, either record, either height).
+    let compareKey = "";
+
+    /** One comparison line, or the reason it could not be computed yet. */
+    async function compareAgainst(ref, refSt, mode) {
+      const label = `与 ${ref.name}（${ref.kind}）`;
+      const wDone = Number(refSt.current) > 0 && Number(refSt.current) >= Number(refSt.total);
+      if (refSt.state !== "done" && !wDone) {
+        const pct = Number(refSt.total) > 0
+          ? (100 * Number(refSt.current) / Number(refSt.total)).toFixed(1)
+          : "?";
+        return `${label}：等待 ${ref.name} 完整记录（当前 ${pct}%）`;
+      }
+      const [refRes, rtfpRes] = await Promise.all([
+        fetch(`${ref.asset}?t=${Date.now()}`, { cache: "no-store" }),
+        fetch(`/assets/records/rtfp_faces.bin?t=${Date.now()}`, { cache: "no-store" }),
+      ]);
+      if (!refRes.ok || !rtfpRes.ok) return `${label}：读取记录失败`;
+      // Both records are RHGF v5: same header, same one-f32-per-face layout.
+      const a = parseWernerScalars(await refRes.arrayBuffer());
+      const b = parseWernerScalars(await rtfpRes.arrayBuffer());
+      if (!a || !b) return `${label}：记录格式无效`;
+      const d = scalarDiffStats(b, a, 0.05);
+      if (!d) return `${label}：无足够的有效面片`;
+      const pct = (x) => `${(100 * x).toFixed(1)}%`;
+      const partial = d.compared < d.total ? `（仅 ${d.compared}/${d.total} 面可比）` : "";
+      const rtfpTag = mode === "constant" ? "RT-FP 常密度" : "RT-FP 柯西";
+      return `${label} 记录差：中位 ${pct(d.med)} · 最大 ${pct(d.max)}`
+        + ` · 差>${pct(d.relEps)} 的面 ${d.over}/${d.compared}${partial}`
+        + ` · ${rtfpTag} vs ${ref.name}`
+        + standoffCompareNote(a.standoffMm, b.standoffMm);
+    }
+
+    async function updateAlgorithmCompare(rtfpStatus, disk) {
+      if (!isRtfp || !compareEl) return;
+      const mode = rtfpStatus?.densityMode || "cauchy";
+      compareEl.hidden = false;
+      if (!rtfpStatus?.done) {
+        compareKey = "";
+        compareEl.textContent =
+          "算完后自动与 Werner（常密度）和 Mascon（柯西密度）记录逐面比对（相对差 > 5 % 记为不同）";
+        return;
+      }
+      if (compareBusy) return;
+      compareBusy = true;
+      try {
+        // Memoise on everything the two lines depend on: the density mode, the
+        // RT-FP record, and both reference records.
+        const refSts = await Promise.all(
+          COMPARE_REFS.map(async (ref) =>
+            (await (await fetch(ref.api, { cache: "no-store" })).json())),
+        );
+        const rtfpKey = `${disk?.current ?? ""}/${disk?.total ?? ""}@${disk?.standoffMm ?? ""}`;
+        const refKey = refSts
+          .map((s) => `${s.state}:${s.current}/${s.total}@${s.standoffMm}`)
+          .join("|");
+        const key = `${mode}|${rtfpKey}|${refKey}`;
+        if (key === compareKey) return;
+        compareKey = key;
+        const lines = [];
+        for (let i = 0; i < COMPARE_REFS.length; i++) {
+          lines.push(await compareAgainst(COMPARE_REFS[i], refSts[i], mode));
+        }
+        compareEl.style.whiteSpace = "pre-line";
+        compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
+      } catch (e) {
+        // Drop the memo so a transient read failure is retried on the next poll.
+        compareKey = "";
+        compareEl.textContent = `对比失败：${e}`;
+      } finally {
+        compareBusy = false;
+      }
+    }
+
+    async function startBake(mode) {
+      const label = mode === "resume" ? "继续" : "重新";
+      bakeBtn.disabled = true;
+      resumeBtn.disabled = true;
+      statusEl.textContent = mode === "resume"
+        ? "正在从记录恢复并继续计算…"
+        : `正在以观测面 ${fmtMm(standoffMm)} 清空记录并重新计算…`;
+      try {
+        const body = { mode, standoffMm };
+        // RT-FP bakes two density models; the others are fixed.
+        if (isRtfp) body.density = densityMode;
+        const s = await (await fetch(`${bakeApi}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })).json();
+        renderStatus(s);
+      } catch (e) {
+        statusEl.textContent = `${label}计算启动失败: ${e}`;
+        bakeBtn.disabled = false;
+        resumeBtn.disabled = false;
+      }
+    }
+
+    /** Apply a new observation height to whichever algorithm is on screen. */
+    function applyStandoff(mm) {
+      setStandoffUi(mm);
+      // Whatever is on disk now belongs to the previous height.
+      setStandoffRecordLabel(Number.NaN);
+      startBake("restart");
+    }
+
+    standoffRange.addEventListener("input", () => {
+      standoffDragging = true;
+      setStandoffUi(posToMm(standoffRange.value));
+    });
+    standoffRange.addEventListener("change", () => {
+      standoffDragging = false;
+      standoffHoldUntil = Date.now() + 4000;
+      applyStandoff(standoffMm);
+    });
+
+    async function pollStatus() {
+      try {
+        const s = await (await fetch(`${bakeApi}/status`, { cache: "no-store" })).json();
+        renderStatus(s);
+        return s;
+      } catch (e) {
+        statusEl.textContent = `状态读取失败: ${e}`;
+        return null;
+      }
+    }
+
+    async function pullBakeIntoWasm(wasm) {
+      try {
+        const bakeRes = await fetch(`${bakeAsset}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!bakeRes.ok) return;
+        const bakeBytes = new Uint8Array(await bakeRes.arrayBuffer());
+        if (bakeBytes.byteLength >= 28) wasm.push_bake_update(bakeBytes);
+      } catch {
+        /* ignore transient read while writer truncates */
+      }
+    }
+
+    // All three algorithms share these controls.
+    bakeBtn.addEventListener("click", () => startBake("restart"));
+    resumeBtn.addEventListener("click", () => startBake("resume"));
+    reloadBtn.addEventListener("click", () => location.reload());
+    densBtn.addEventListener("click", () => {
+      densityMode = densityMode === "constant" ? "cauchy" : "constant";
+      statusEl.textContent = densityMode === "constant"
+        ? "已切换常密度，重新计算中…"
+        : "已切换 Cauchy，重新计算中…";
+      startBake("restart");
+    });
+    setInterval(pollStatus, 1000);
+    await pollStatus();
+
+    if (!navigator.gpu) {
+      show("需要 WebGPU（当前浏览器不支持 navigator.gpu）");
+    } else {
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          show("WebGPU adapter 不可用：请用本机 Chrome/Edge 打开，并确保已启用 WebGPU");
+        } else {
+          // Observation height for this session: an explicit ?standoff= wins,
+          // otherwise the height the record on disk was baked at (the status
+          // poll adopts it a moment later), otherwise the 1 mm default.
+          const urlStandoff = Number(new URLSearchParams(location.search).get("standoff"));
+          if (
+            Number.isFinite(urlStandoff)
+            && urlStandoff >= STANDOFF_MIN_MM
+            && urlStandoff <= STANDOFF_MAX_MM
+          ) {
+            setStandoffUi(urlStandoff);
+          }
+          const wasm = await import("/pkg/ryugu_h_cal.js");
+          await wasm.default({ module_or_path: "/pkg/ryugu_h_cal_bg.wasm" });
+          let bakeBytes = new Uint8Array(28);
+          try {
+            const bakeRes = await fetch(bakeAsset, { cache: "no-store" });
+            if (bakeRes.ok) bakeBytes = new Uint8Array(await bakeRes.arrayBuffer());
+          } catch {
+            /* start gray; the bake may create file */
+          }
+          wasm.run_with_bake(bakeBytes);
+          setInterval(() => pullBakeIntoWasm(wasm), 500);
+        }
+      } catch (e) {
+        show(String(e?.stack || e));
+      }
+    }
+  </script>
+</body>
+</html>

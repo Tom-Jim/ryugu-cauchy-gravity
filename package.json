@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "dev": "bun run build:dev && bun run serve",
+    "serve": "bun src/server/server.ts",
     "build": "bun scripts/build.mjs --release",
     "build:dev": "bun scripts/build.mjs --dev",
-    "serve": "bun src/server.ts",
-    "dev": "bun run build:dev && bun run serve",
-    "esa:configure": "cmake -S vendor/polyhedral-gravity-model -B native/esa-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYHEDRAL_GRAVITY_PARALLELIZATION=CPP -DBUILD_POLYHEDRAL_GRAVITY_PYTHON_INTERFACE=OFF -DBUILD_POLYHEDRAL_GRAVITY_TESTS=OFF -DBUILD_POLYHEDRAL_GRAVITY_EXECUTABLE=OFF -DBUILD_POLYHEDRAL_GRAVITY_LIBRARY=ON -DPOLYHEDRAL_GRAVITY_LOGGING_LEVEL=WARN && cmake --build native/esa-build -j",
-    "esa:bridge": "cmake -S native -B native/bridge-build -DCMAKE_BUILD_TYPE=Release && cmake --build native/bridge-build -j",
-    "bake:gradient": "bun scripts/bake_gradient.mjs"
+    "esa:configure": "cmake -S vendor/polyhedral-gravity-model -B bakes/esa-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYHEDRAL_GRAVITY_PARALLELIZATION=CPP -DBUILD_POLYHEDRAL_GRAVITY_PYTHON_INTERFACE=OFF -DBUILD_POLYHEDRAL_GRAVITY_TESTS=OFF -DBUILD_POLYHEDRAL_GRAVITY_EXECUTABLE=OFF -DPOLYHEDRAL_GRAVITY_LIBRARY=ON -DPOLYHEDRAL_GRAVITY_LOGGING_LEVEL=WARN && cmake --build bakes/esa-build -j",
+    "bakes:build": "cmake -S bakes -B bakes/build -DCMAKE_BUILD_TYPE=Release && cmake --build bakes/build -j",
+    "rtfp:build": "RUSTC_WRAPPER= CARGO_TARGET_DIR=./target cargo build --release --manifest-path bakes/rtfp/Cargo.toml"
   }
 }

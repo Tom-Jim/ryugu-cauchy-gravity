@@ -1,10 +1,15 @@
+# Build outputs
 /target
 /pkg
+/bakes/build
+/bakes/esa-build
 /node_modules
-/native/esa-build
-/native/bridge-build
+
+# Vendored ESA polyhedral-gravity library (local checkout, not part of the repo)
 /vendor/polyhedral-gravity-model
-assets/.bake_progress.log
-assets/.bake_order.bin
-.DS_Store
+
+# Runtime bake state: resume checkpoints, face orders, progress logs. The
+# finished `assets/records/*_faces.bin` records are kept.
+assets/records/.*
 *.log
+.DS_Store
