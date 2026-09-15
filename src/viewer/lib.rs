@@ -66,7 +66,6 @@ fn run_app() {
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: UpdateMode::Continuous,
-            ..default()
         })
         .add_plugins(
             DefaultPlugins
@@ -202,15 +201,18 @@ fn prepare_paint_target(
         metallic_roughness_texture: None,
         occlusion_texture: None,
         emissive_texture: None,
-        // Unlit: lighting was exaggerating flat-face "色块" on noisy mascon fields.
+        // Unlit: lighting exaggerated flat-face banding on noisy mascon fields.
         unlit: true,
         perceptual_roughness: 1.0,
         metallic: 0.0,
         ..default()
     });
-    commands
-        .entity(entity)
-        .insert((Mesh3d(handle), MeshMaterial3d(mat), Visibility::Visible, PaintTarget));
+    commands.entity(entity).insert((
+        Mesh3d(handle),
+        MeshMaterial3d(mat),
+        Visibility::Visible,
+        PaintTarget,
+    ));
 }
 
 fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
@@ -228,11 +230,7 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
         paint.last_finite = 0;
     }
 
-    let finite_file = baked
-        .face_scalar
-        .iter()
-        .filter(|s| s.is_finite())
-        .count();
+    let finite_file = baked.face_scalar.iter().filter(|s| s.is_finite()).count();
     let finite_local = paint.scalars.iter().filter(|s| s.is_finite()).count();
 
     // Unchanged complete (or unchanged progressive) snapshot — do not re-sort / re-queue.
@@ -299,7 +297,7 @@ fn paint_faces_from_queue(
     targets: Query<&Mesh3d, With<PaintTarget>>,
 ) {
     let range_ok = paint.window.is_valid();
-    // Werner complete (or large backlog): paint the whole queue this frame — "秒渲染".
+    // Bake complete (or a large backlog): paint the whole queue this frame.
     let budget = if paint.queue.len() > 8_000 {
         paint.queue.len()
     } else {

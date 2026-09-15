@@ -29,8 +29,7 @@ mod tests {
     #[test]
     fn frobenius_matches_matrix_form() {
         let t: Sym6 = [1.0, -2.0, 0.5, 0.25, -0.75, 1.5];
-        let expected =
-            (1.0 + 4.0 + 0.25 + 2.0 * (0.0625 + 0.5625 + 2.25)).sqrt();
+        let expected = (1.0f64 + 4.0 + 0.25 + 2.0 * (0.0625 + 0.5625 + 2.25)).sqrt();
         assert!((frobenius(&t) - expected).abs() < 1e-12);
     }
 

@@ -34,7 +34,8 @@ impl Mesh {
                 else {
                     continue;
                 };
-                mesh.xyz.extend_from_slice(&[x * km_to_m, y * km_to_m, z * km_to_m]);
+                mesh.xyz
+                    .extend_from_slice(&[x * km_to_m, y * km_to_m, z * km_to_m]);
             } else if bytes[0] == b'f' && bytes[1] == b' ' {
                 let mut idx = [0u32; 3];
                 let mut n = 0;
@@ -68,7 +69,11 @@ impl Mesh {
     }
 
     pub fn face(&self, f: usize) -> [u32; 3] {
-        [self.faces[3 * f], self.faces[3 * f + 1], self.faces[3 * f + 2]]
+        [
+            self.faces[3 * f],
+            self.faces[3 * f + 1],
+            self.faces[3 * f + 2],
+        ]
     }
 
     /// Area-weighted vertex normals from the accumulated, un-normalised face

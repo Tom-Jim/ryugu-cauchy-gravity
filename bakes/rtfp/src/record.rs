@@ -41,7 +41,14 @@ impl Record {
             s_max: f32::NEG_INFINITY,
             n_done: 0,
         };
-        write_header(&mut file, n_faces, 0, standoff_mm, f32::INFINITY, f32::NEG_INFINITY)?;
+        write_header(
+            &mut file,
+            n_faces,
+            0,
+            standoff_mm,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        )?;
         file.write_all(bytemuck_cast(&record.scalars))?;
         file.flush()?;
         Ok(Record { file, ..record })
@@ -174,7 +181,5 @@ fn bytemuck_cast<T: Copy>(v: &[T]) -> &[u8] {
 }
 
 fn bytemuck_cast_mut<T: Copy>(v: &mut [T]) -> &mut [u8] {
-    unsafe {
-        std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, std::mem::size_of_val(v))
-    }
+    unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, std::mem::size_of_val(v)) }
 }

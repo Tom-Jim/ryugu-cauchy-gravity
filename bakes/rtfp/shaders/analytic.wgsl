@@ -19,6 +19,8 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 // Four rows per face: corner A, corner B, corner C, (unit normal, plane offset).
+// Fourth component of the last row is the face's density jump (kg/m³): 1 for the
+// unit-density polyhedral tensor, Δρ for the Carlson density-jump representation.
 @group(0) @binding(1) var<storage, read> faces: array<vec4<f32>>;
 // Observation points, xyz + pad.
 @group(0) @binding(2) var<storage, read> points: array<vec4<f32>>;
@@ -103,12 +105,15 @@ fn analytic(
         let base = 4u * f;
         let i_vec = face_integral(f, x);
         let nrm = faces[base + 3u].xyz;
-        w[0] = w[0] + nrm.x * i_vec.x;
-        w[1] = w[1] + nrm.y * i_vec.y;
-        w[2] = w[2] + nrm.z * i_vec.z;
-        w[3] = w[3] + nrm.x * i_vec.y;
-        w[4] = w[4] + nrm.x * i_vec.z;
-        w[5] = w[5] + nrm.y * i_vec.z;
+        // `weight` is the per-face density jump; it is 1.0 for the polyhedral
+        // tensor the RT-FP ray solver scales by ρ(x) itself.
+        let weight = faces[base + 3u].w;
+        w[0] = w[0] + weight * nrm.x * i_vec.x;
+        w[1] = w[1] + weight * nrm.y * i_vec.y;
+        w[2] = w[2] + weight * nrm.z * i_vec.z;
+        w[3] = w[3] + weight * nrm.x * i_vec.y;
+        w[4] = w[4] + weight * nrm.x * i_vec.z;
+        w[5] = w[5] + weight * nrm.y * i_vec.z;
     }
     for (var k = 0u; k < SLOTS; k = k + 1u) {
         partials[lid.x * SLOTS + k] = w[k];

@@ -1,10 +1,19 @@
 //! Link the vendored ESA polyhedral-gravity library (analytic uniform-density
 //! Hessian) that the C++ bakes already use. `bakes/build` is produced by
 //! `bun run bakes:build` (and `bakes/esa-build` by `bun run esa:configure`).
+//!
+//! Everything here is behind the `esa` cargo feature: the RT-FP split and the
+//! Carlson jump-surface solver do not need the library, so the default build
+//! has no native dependencies at all and a bare checkout still compiles.
 
 use std::path::{Path, PathBuf};
 
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_ESA").is_none() {
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
+
     let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -29,5 +38,8 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=c++");
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed={}", bridge.join("libesa_pg_bridge.a").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        bridge.join("libesa_pg_bridge.a").display()
+    );
 }

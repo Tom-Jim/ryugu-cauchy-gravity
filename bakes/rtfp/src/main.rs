@@ -15,22 +15,24 @@
 
 mod analytic;
 mod bvh;
+mod carlson;
 mod density;
 mod esa;
 mod geom;
 mod gpu;
+mod mass;
 mod mesh;
 mod quadrature;
 mod record;
 mod split;
 mod tensor;
 
-use density::{Density, DensityMode};
+use density::{Density, DensityMode, Normalization};
 use geom::BruteTracer;
 use mesh::Mesh;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tensor::{Sym6, frobenius};
+use tensor::{frobenius, Sym6};
 
 /// Gravitational constant (CODATA 2018), matching the C++ bakes in `bakes/`.
 pub const G: f64 = 6.674_30e-11;
@@ -46,6 +48,26 @@ const STANDOFF_MAX_MM: f64 = 32000.0;
 /// Observation points per GPU block (bounds the interval buffers).
 const POINTS_PER_BLOCK: usize = 2048;
 
+/// Which solver produces the face scalars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Solver {
+    /// `H = ρ(x)·W(x) + G Σω T Σw R_k` — analytic polyhedral near field plus a
+    /// ray-traced directional quadrature.
+    Ray,
+    /// `H_ij = G Σ_F Δρ_F n_j I_F[i]` over the star-cone jump surfaces.
+    Carlson,
+}
+
+impl Solver {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "ray" | "rtfp" => Ok(Self::Ray),
+            "carlson" => Ok(Self::Carlson),
+            other => Err(format!("unknown solver {other:?} (ray|carlson)")),
+        }
+    }
+}
+
 struct Args {
     obj: PathBuf,
     out: PathBuf,
@@ -53,6 +75,8 @@ struct Args {
     cache: PathBuf,
     density: PathBuf,
     mode: DensityMode,
+    normalize: Normalization,
+    solver: Solver,
     standoff_mm: f64,
     directions: usize,
     resume: bool,
@@ -77,6 +101,10 @@ fn parse_args() -> Result<Args, String> {
         cache: r.join("assets/records/.rtfp_w_cache.bin"),
         density: r.join("assets/density/cauchy.toml"),
         mode: DensityMode::Cauchy,
+        // The TOML asks for the Ryugu mass scale, so that is the default; the
+        // old ρ(0) convention stays reachable for reproducing older records.
+        normalize: Normalization::TotalMass,
+        solver: Solver::Ray,
         // Same start height as the other two bakes: comparable records out of the box.
         standoff_mm: 16000.0,
         directions: DIRS_DEFAULT,
@@ -84,20 +112,32 @@ fn parse_args() -> Result<Args, String> {
         selftest: false,
     };
     let mut it = std::env::args().skip(1);
+    // Tracked so the Carlson defaults below never override an explicit path.
+    let (mut out_set, mut order_set) = (false, false);
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--obj" => args.obj = PathBuf::from(value()?),
-            "--out" => args.out = PathBuf::from(value()?),
-            "--order" => args.order = PathBuf::from(value()?),
+            "--out" => {
+                args.out = PathBuf::from(value()?);
+                out_set = true;
+            }
+            "--order" => {
+                args.order = PathBuf::from(value()?);
+                order_set = true;
+            }
             "--cache" => args.cache = PathBuf::from(value()?),
             "--density" => args.density = PathBuf::from(value()?),
             "--mode" => args.mode = DensityMode::parse(&value()?)?,
+            "--normalize" => args.normalize = Normalization::parse(&value()?)?,
+            "--solver" => args.solver = Solver::parse(&value()?)?,
             "--directions" => {
                 args.directions = value()?.parse().map_err(|e| format!("--directions: {e}"))?
             }
             "--standoff-mm" => {
-                let mm: f64 = value()?.parse().map_err(|e| format!("--standoff-mm: {e}"))?;
+                let mm: f64 = value()?
+                    .parse()
+                    .map_err(|e| format!("--standoff-mm: {e}"))?;
                 if !(1.0..=STANDOFF_MAX_MM).contains(&mm) {
                     return Err(format!("--standoff-mm {mm} outside 1..{STANDOFF_MAX_MM}"));
                 }
@@ -117,13 +157,32 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => {
                 println!(
                     "rtfp-bake --obj mesh.obj [--out path] [--order path] [--cache path]\n\
-                     \x20         [--density toml] [--mode cauchy|constant] [--standoff-mm 1..32000]\n\
-                     \x20         [--directions 288] [--resume] [--selftest]"
+                     \x20         [--density toml] [--mode cauchy|constant] [--normalize rho0|total_mass]\n\
+                     \x20         [--solver ray|carlson] [--standoff-mm 1..32000] [--directions 288]\n\
+                     \x20         [--resume] [--selftest]"
                 );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    // A Carlson run must not clobber the RT-FP record, so give it its own paths
+    // unless the caller asked for something specific.
+    if args.solver == Solver::Carlson {
+        if !out_set {
+            args.out = r.join(format!(
+                "assets/records/carlson_{}_faces.bin",
+                args.mode.tag()
+            ));
+        }
+        if !order_set {
+            args.order = r.join(format!(
+                "assets/records/.carlson_{}_order.bin",
+                args.mode.tag()
+            ));
+        }
+        // `--cache` is not consulted on this path: the Carlson face list depends on
+        // the density field, so its analytic pass cannot be replayed per standoff.
     }
     Ok(args)
 }
@@ -136,7 +195,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = if args.selftest { selftest(&args) } else { run(&args) };
+    let result = if args.selftest {
+        selftest(&args)
+    } else {
+        match args.solver {
+            Solver::Ray => run(&args),
+            Solver::Carlson => run_carlson(&args),
+        }
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -239,8 +305,153 @@ fn selftest(args: &Args) -> Result<(), String> {
         rel6(&direct, &lib),
         lib[2] * direct[2] > 0.0
     );
+    selftest_mass()?;
     selftest_surface_form(args)?;
+    selftest_carlson(args)?;
     selftest_gpu(args)
+}
+
+/// The identity the Carlson solver rests on, checked end-to-end on the real mesh:
+/// with one density everywhere every cone weight `ρ_f − ρ_ref` vanishes, so the
+/// 983 040-triangle face list has to collapse back onto `ρ_ref·W(x)` — the same
+/// quantity `analytic.rs`, the Werner bake and the ESA library compute from
+/// entirely different code. This is what proves the per-face weights survive the
+/// trip through the shader and that the mesh faces carry `ρ_ref`.
+///
+/// The star-cone *orientations* are checked separately, and on the unit cube:
+/// a cone only tiles a body that is star-shaped from its apex, and Ryugu is not
+/// (see the coverage/signed-ratio line below), so running the raw cone on the
+/// real mesh would be measuring the body's shape rather than the code.
+fn selftest_carlson(args: &Args) -> Result<(), String> {
+    let rho = 1190.0f64;
+    let mesh =
+        Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
+    let density = Density::homogeneous(rho, &mesh);
+    let (faces, stats) = carlson::face_list(&mesh, &density, DensityMode::Constant);
+    println!(
+        "  carlson face list: {} triangles ({} mesh + {} cone), cone coverage {:.5} %, \
+         |signed|/covered {:.6}",
+        faces.len(),
+        stats.n_mesh_faces,
+        stats.n_faces,
+        100.0 * stats.coverage(),
+        stats.signed_ratio()
+    );
+
+    let all = mesh.observation_points(1e-3);
+    let nv = mesh.vertex_count();
+    let sample: Vec<[f64; 3]> = (0..64).map(|i| all[i * nv / 64]).collect();
+    let reference = analytic::precompute(&mesh);
+    let dirs = quadrature::directions(8);
+    let bvh = bvh::Bvh::build(&mesh);
+    let device = gpu::Device::new()?;
+    let scene = gpu::Scene::new(
+        device,
+        &mesh,
+        &bvh,
+        &faces,
+        &sample,
+        &dirs,
+        POINTS_PER_BLOCK,
+        0,
+    );
+    let got = scene.analytic_tensors()?;
+    let mut errs: Vec<f64> = sample
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let mut want = analytic::hessian6(&reference, *x);
+            for t in want.iter_mut() {
+                *t *= rho;
+            }
+            rel6(&got[i], &want)
+        })
+        .collect();
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let worst = errs[errs.len() - 1];
+    println!(
+        "  carlson constant-density identity vs polyhedral ρ·W: median {:.3e}, worst {:.3e} \
+         (f32 analytic alone reaches ~3e-3 at 1 mm)",
+        errs[errs.len() / 2],
+        worst
+    );
+    if worst > 1e-2 {
+        return Err(format!(
+            "Carlson jump surfaces disagree with ρ·W by {worst:.3e}; the face weights or \
+             orientations are wrong",
+        ));
+    }
+    selftest_cross_solver(&mesh)?;
+    Ok(())
+}
+
+/// The Carlson face list against the RT-FP tensor on the *real* density field.
+///
+/// This is the cross-validation the two solvers exist for, and it runs on the CPU
+/// in seconds, so it can gate CI without a GPU or a bake. What it measures is the
+/// jump-surface representation error — how much of `ρ` a piecewise-constant cell
+/// fails to carry — not the arithmetic of either solver; the two share no code
+/// beyond the mesh and the face kernel.
+fn selftest_cross_solver(mesh: &Mesh) -> Result<(), String> {
+    let root = crate::root();
+    let path = root.join("assets/density/cauchy.toml");
+    let density = Density::from_toml(&path, mesh, Normalization::TotalMass)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let kernels = density.kernels();
+    let (faces, stats) = carlson::face_list(mesh, &density, DensityMode::Cauchy);
+    println!(
+        "  carlson Cauchy face list: {} triangles ({} slabs, worst within-slab variation \
+         {:.3e} of ρ_ref)",
+        faces.len(),
+        stats.slabs,
+        stats.worst_slab_variation
+    );
+
+    let uniform = analytic::precompute(mesh);
+    let tree = bvh::Bvh::build(mesh);
+    let radius = body_radius(mesh);
+    let t_max = radius * 4.0;
+    // 288 directions is what the RT-FP bake itself uses, and on this field its own
+    // quadrature error against a 1568-direction run is ~8e-5, two orders below the
+    // representation error being measured here.
+    let dirs = quadrature::directions(288);
+    // Both ends of the slider. The near end is the hard one: a millimetre above a
+    // face, the tensor is dominated by that face, so a cell-level density error is
+    // amplified by the same near-field weighting that makes the voxel direct sum
+    // unusable there.
+    for standoff_mm in [1.0f64, 16_000.0] {
+        let all = mesh.observation_points(standoff_mm * 1e-3);
+        let nv = mesh.vertex_count();
+        let sample: Vec<[f64; 3]> = (0..32).map(|i| all[i * nv / 32]).collect();
+        let mut errs: Vec<f64> = sample
+            .iter()
+            .map(|x| {
+                let want = carlson::rtfp_reference(
+                    mesh, &tree, &uniform, &density, kernels, x, t_max, &dirs,
+                );
+                rel6(&analytic::hessian6(&faces, *x), &want)
+            })
+            .collect();
+        errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let worst = errs[errs.len() - 1];
+        println!(
+            "  carlson vs RT-FP at standoff {standoff_mm} mm: median {:.3e}, worst {:.3e}",
+            errs[errs.len() / 2],
+            worst
+        );
+        // A representation error, not an arithmetic one, and it is bounded by the
+        // within-slab density variation the face list reports above. The bound is
+        // loose on purpose: what it has to catch is a wrong weight or a wrong
+        // orientation, which shows up at O(1).
+        if worst.is_nan() || worst >= 6e-2 {
+            return Err(format!(
+                "Carlson and RT-FP disagree by {worst:.3e} at {standoff_mm} mm; either the \
+                 jump-surface representation has lost the density field or one of the two \
+                 solvers is wrong"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Closed form vs the ESA library on the real mesh, at every standoff the UI
@@ -278,7 +489,11 @@ fn selftest_surface_form(args: &Args) -> Result<(), String> {
         let theta = 2.0 * std::f64::consts::PI * (k as f64) / 8.0;
         let r = radius * (1.15 + 0.05 * k as f64);
         samples.push((
-            [r * theta.cos(), 0.3 * r * theta.sin(), 0.2 * r * theta.cos()],
+            [
+                r * theta.cos(),
+                0.3 * r * theta.sin(),
+                0.2 * r * theta.cos(),
+            ],
             format!("free r={r:.1}m"),
         ));
     }
@@ -325,8 +540,8 @@ fn selftest_gpu(args: &Args) -> Result<(), String> {
     let t_max = radius * 4.0;
     let dirs = quadrature::directions(args.directions);
     let density = match args.mode {
-        DensityMode::Cauchy => Density::from_toml(&args.density)?,
-        DensityMode::Constant => Density::homogeneous(1190.0),
+        DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
     let kernels = density.kernels();
     let all = mesh.observation_points(1e-3);
@@ -372,7 +587,11 @@ fn selftest_gpu(args: &Args) -> Result<(), String> {
             geom::bvh_crossings(&bvh, &mesh, *p, d, GEOM_EPS_M, t_max, &mut bvh_hits);
             if hits.len() != bvh_hits.len() {
                 worst_ray = f64::INFINITY;
-                println!("    point {i} direction {q}: {} crossings, BVH found {}", hits.len(), bvh_hits.len());
+                println!(
+                    "    point {i} direction {q}: {} crossings, BVH found {}",
+                    hits.len(),
+                    bvh_hits.len()
+                );
                 continue;
             }
             for (a, b) in hits.iter().zip(bvh_hits.iter()) {
@@ -383,7 +602,8 @@ fn selftest_gpu(args: &Args) -> Result<(), String> {
     println!("  BVH traversal vs brute force: worst crossing rel {worst_ray:.3e}");
 
     // 3. Remainder: full WGSL chain (probe + rays + remainder) vs f64 brute force.
-    let rem_gpu = scene.block_remainder(&sample, &dirs, kernels, t_max as f32, GEOM_EPS_M as f32)?;
+    let rem_gpu =
+        scene.block_remainder(&sample, &dirs, kernels, t_max as f32, GEOM_EPS_M as f32)?;
     let mut errs: Vec<f64> = Vec::new();
     let mut worst = (0.0f64, 0usize);
     for (i, p) in sample.iter().enumerate() {
@@ -429,8 +649,92 @@ fn body_radius(mesh: &Mesh) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
+/// Print both normalisation conventions side by side, so the constant factor
+/// between this record and one baked under the other convention is on the log
+/// rather than buried inside a face-by-face comparison.
+fn print_mass_report(density: &Density, mode: DensityMode) {
+    let m = &density.mass;
+    println!(
+        "mass integral (divergence theorem): body volume {:.6e} m³",
+        m.volume
+    );
+    match mode {
+        DensityMode::Cauchy => {
+            let target = if m.target_mass > 0.0 {
+                format!("{:.6e} kg", m.target_mass)
+            } else {
+                "absent from TOML".to_string()
+            };
+            println!(
+                "  raw TOML weights: ∫ρ dV = {:.6e} kg  →  ρ(0)=1190 convention ×{:.9e} = {:.6e} kg",
+                m.raw_mass, m.rho0_scale, m.rho0_mass
+            );
+            println!(
+                "  normalization={:?}: ×{:.9e} = {:.6e} kg (target {target})",
+                m.normalization, m.applied_scale, m.applied_mass
+            );
+            if m.rho0_mass.abs() > 1e-30 {
+                println!(
+                    "  scale vs the old ρ(0) convention: ×{:.9} ({:+.4} %) — a constant on every face",
+                    m.scale_vs_rho0(),
+                    100.0 * (m.scale_vs_rho0() - 1.0)
+                );
+            }
+        }
+        DensityMode::Constant => println!(
+            "  constant {:.1} kg/m³ × V = {:.6e} kg (the Werner bake's density, unchanged)",
+            density.bulk_density, m.applied_mass
+        ),
+    }
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+}
+
+/// Checks the volume→surface reduction in `mass.rs` against closed forms: the
+/// exact enclosed volume of a cube, and the analytic ball integral
+/// `4π(R − atan(σR)/σ)/σ²` for the sphere tessellations the mesh format allows.
+fn selftest_mass() -> Result<(), String> {
+    let cube = unit_cube();
+    let v = mass::body_volume(&cube);
+    println!(
+        "  cube volume: {v:.12} (exact 8) → rel {:.3e}",
+        (v - 8.0).abs() / 8.0
+    );
+    if (v - 8.0).abs() > 1e-10 {
+        return Err(format!("cube volume {v} != 8"));
+    }
+
+    let mut worst = (0.0f64, 0.0f64);
+    for sigma in [0.0f64, 0.05, 0.28, 1.0, 8.0] {
+        let sphere = mass::uv_sphere(0.5, 128);
+        let got = mass::kernel_volume(&sphere, [0.0, 0.0, 0.0], sigma);
+        let want = mass::ball_kernel_volume(0.5, sigma);
+        let rel = (got - want).abs() / want;
+        if rel > worst.0 {
+            worst = (rel, sigma);
+        }
+    }
+    println!(
+        "  sphere ∫(1+σ²r²)⁻¹dV vs closed form: worst rel {:.3e} (σ={})",
+        worst.0, worst.1
+    );
+    if worst.0 > 3e-4 {
+        return Err(format!(
+            "surface mass integral disagrees with the closed form by {:.3e}",
+            worst.0
+        ));
+    }
+    Ok(())
+}
+
 fn rel6(a: &Sym6, b: &Sym6) -> f64 {
-    let d = frobenius(&[a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3], a[4] - b[4], a[5] - b[5]]);
+    let d = frobenius(&[
+        a[0] - b[0],
+        a[1] - b[1],
+        a[2] - b[2],
+        a[3] - b[3],
+        a[4] - b[4],
+        a[5] - b[5],
+    ]);
     d / frobenius(b).max(1e-300)
 }
 
@@ -442,15 +746,24 @@ fn analytic_tensors(
 ) -> Result<Vec<Sym6>, String> {
     if let Ok(bytes) = std::fs::read(&args.cache) {
         if let Some(cached) = decode_cache(&bytes, points.len(), args.standoff_mm) {
-            println!("analytic tensor cache hit: {} points @ {} mm", points.len(), args.standoff_mm);
+            println!(
+                "analytic tensor cache hit: {} points @ {} mm",
+                points.len(),
+                args.standoff_mm
+            );
             return Ok(cached);
         }
     }
-    println!("analytic tensor: {} points × faces on the GPU", points.len());
+    println!(
+        "analytic tensor: {} points × faces on the GPU",
+        points.len()
+    );
     std::io::Write::flush(&mut std::io::stdout()).ok();
     let tensors = scene.analytic_tensors()?;
     if let Some(bad) = tensors.iter().flatten().find(|v| !v.is_finite()) {
-        return Err(format!("analytic tensor produced a non-finite component ({bad})"));
+        return Err(format!(
+            "analytic tensor produced a non-finite component ({bad})"
+        ));
     }
     if let Err(e) = std::fs::write(&args.cache, encode_cache(&tensors, args.standoff_mm)) {
         eprintln!("warning: analytic tensor cache not written: {e}");
@@ -518,12 +831,16 @@ fn run(args: &Args) -> Result<(), String> {
     let t_max = (radius * 4.0) as f32;
 
     let density = match args.mode {
-        DensityMode::Cauchy => Density::from_toml(&args.density)?,
-        DensityMode::Constant => Density::homogeneous(1190.0),
+        DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
+    print_mass_report(&density, args.mode);
     let dirs = quadrature::directions(args.directions);
     let kernels = density.kernels();
-    println!("quadrature: {} directions (exact: Σω=4π, ΣωT=0)", dirs.len());
+    println!(
+        "quadrature: {} directions (exact: Σω=4π, ΣωT=0)",
+        dirs.len()
+    );
     std::io::Write::flush(&mut std::io::stdout()).ok();
 
     let device = gpu::Device::new()?;
@@ -540,7 +857,7 @@ fn run(args: &Args) -> Result<(), String> {
     let w = analytic_tensors(args, &scene, &points)?;
 
     // Which vertices the record still needs (resume).
-    let mut record = if args.resume {
+    let record = if args.resume {
         let existing = record::Record::open_resume(&args.out, nf)
             .map_err(|e| format!("{}: {e}", args.out.display()))?;
         match existing {
@@ -581,8 +898,7 @@ fn run(args: &Args) -> Result<(), String> {
     if !todo.is_empty() {
         for lo in (0..nv).step_by(POINTS_PER_BLOCK) {
             let hi = (lo + POINTS_PER_BLOCK).min(nv);
-            let remainder =
-                scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?;
+            let remainder = scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?;
             for (i, rem) in remainder.into_iter().enumerate() {
                 let vi = lo + i;
                 if !needed[vi] {
@@ -603,9 +919,25 @@ fn run(args: &Args) -> Result<(), String> {
         }
     }
 
-    // Progressive face write in the saved (shuffled) order, like the other bakes.
-    let saved_order =
-        record::load_order(&args.order, nf).map_err(|e| format!("{}: {e}", args.order.display()))?;
+    write_face_record(args, &mesh, &vertex_h, record)
+}
+
+/// Per-face scalars from per-vertex tensors, written progressively in the saved
+/// (shuffled) order so the viewer can start drawing before the bake finishes.
+///
+/// The face value is the norm of the *averaged* tensor, exactly like
+/// `bakes/werner/bake_main.cpp` and `bakes/mascon/mascon_bake_main.cpp`:
+/// averaging the three per-vertex norms instead is a different (always larger,
+/// by the triangle inequality) quantity.
+fn write_face_record(
+    args: &Args,
+    mesh: &Mesh,
+    vertex_h: &[[f64; 6]],
+    mut record: record::Record,
+) -> Result<(), String> {
+    let nf = mesh.face_count();
+    let saved_order = record::load_order(&args.order, nf)
+        .map_err(|e| format!("{}: {e}", args.order.display()))?;
     let order = match saved_order {
         Some(o) => o,
         None => {
@@ -642,15 +974,21 @@ fn run(args: &Args) -> Result<(), String> {
                 / 3.0;
         }
         let s = frobenius(&hbar) as f32;
-        record.set_face(fi, s).map_err(|e| format!("{}: {e}", args.out.display()))?;
+        record
+            .set_face(fi, s)
+            .map_err(|e| format!("{}: {e}", args.out.display()))?;
         step += 1;
-        if step % 256 == 0 || record.n_done == nf {
-            record.flush_header().map_err(|e| format!("{}: {e}", args.out.display()))?;
+        if step.is_multiple_of(256) || record.n_done == nf {
+            record
+                .flush_header()
+                .map_err(|e| format!("{}: {e}", args.out.display()))?;
             println!("faces {} / {}", record.n_done, nf);
             std::io::Write::flush(&mut std::io::stdout()).ok();
         }
     }
-    record.flush_header().map_err(|e| format!("{}: {e}", args.out.display()))?;
+    record
+        .flush_header()
+        .map_err(|e| format!("{}: {e}", args.out.display()))?;
     println!(
         "wrote {} dense face scalars to {} (s_min={:e} s_max={:e})",
         nf,
@@ -659,4 +997,111 @@ fn run(args: &Args) -> Result<(), String> {
         record.s_max
     );
     Ok(())
+}
+
+/// Carlson density-jump solver: one analytic pass over the star-cone jump
+/// surfaces, no rays and no directional quadrature.
+fn run_carlson(args: &Args) -> Result<(), String> {
+    let standoff_m = args.standoff_mm * 1e-3;
+    let mesh =
+        Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
+    let nv = mesh.vertex_count();
+    let nf = mesh.face_count();
+    println!("solver=carlson (density-jump surface integral, no ray tracing)");
+    println!("observation standoff: {:.3} mm", args.standoff_mm);
+    println!("mesh: {nv} vertices, {nf} faces (meters)");
+    println!("mode={:?}", args.mode);
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    let points = mesh.observation_points(standoff_m);
+    let density = match args.mode {
+        DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
+    };
+    print_mass_report(&density, args.mode);
+
+    let (faces, stats) = carlson::face_list(&mesh, &density, args.mode);
+    println!(
+        "jump surfaces: {} triangles = {nf} mesh (weight ρ_ref) + {} star-cone (weight ρ_f − ρ_ref)",
+        faces.len(),
+        stats.n_faces
+    );
+    println!(
+        "  star cone from [{:.3}, {:.3}, {:.3}] m, ρ_ref = {:.6e} kg/m³",
+        stats.origin[0], stats.origin[1], stats.origin[2], stats.rho_ref
+    );
+    println!(
+        "  cone coverage {:.5} % of the mesh volume {:.6e} m³, |signed|/covered {:.6} \
+         (below 1 ⇒ not star-shaped; the split keeps that defect off the constant term)",
+        100.0 * stats.coverage(),
+        stats.mesh_volume,
+        stats.signed_ratio()
+    );
+    println!(
+        "  |ρ_f − ρ_ref| range {:.6e} .. {:.6e} kg/m³ ({:.3e} of ρ_ref)",
+        stats.min_jump,
+        stats.max_jump,
+        (stats.max_jump - stats.min_jump) / stats.rho_ref.abs().max(1e-300)
+    );
+    println!(
+        "  radial refinement: {} slabs (max {} per cone), requested tolerance {:.1e}, \
+         worst within-slab variation {:.3e} of ρ_ref{}",
+        stats.slabs,
+        stats.max_slabs_used,
+        stats.tol,
+        stats.worst_slab_variation,
+        if stats.over_budget {
+            " [face budget reached]"
+        } else {
+            ""
+        }
+    );
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    // The analytic pass needs the mesh and BVH buffers on the device, but none of
+    // the ray/remainder state is ever dispatched from here.
+    let bvh = bvh::Bvh::build(&mesh);
+    let dirs = quadrature::directions(8);
+    let device = gpu::Device::new()?;
+    let scene = gpu::Scene::new(
+        device,
+        &mesh,
+        &bvh,
+        &faces,
+        &points,
+        &dirs,
+        POINTS_PER_BLOCK,
+        0,
+    );
+    println!(
+        "evaluating {nv} vertices × {} faces on the GPU",
+        faces.len()
+    );
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let h = scene.analytic_tensors()?;
+    if let Some(bad) = h.iter().flatten().find(|v| !v.is_finite()) {
+        return Err(format!(
+            "carlson tensor produced a non-finite component ({bad})"
+        ));
+    }
+    // Each vertex is already the full `H` for the jump representation: no ρ(x)
+    // factor and no remainder term, which is what makes this an independent path.
+    let vertex_h: Vec<[f64; 6]> = h;
+
+    let record = if args.resume {
+        let existing = record::Record::open_resume(&args.out, nf)
+            .map_err(|e| format!("{}: {e}", args.out.display()))?;
+        match existing {
+            Some(r) if (r.standoff_mm - args.standoff_mm as f32).abs() < 1e-3 => {
+                println!("RESUME from {} / {} faces", r.n_done, nf);
+                r
+            }
+            _ => record::Record::create(&args.out, nf, args.standoff_mm as f32)
+                .map_err(|e| format!("{}: {e}", args.out.display()))?,
+        }
+    } else {
+        record::Record::create(&args.out, nf, args.standoff_mm as f32)
+            .map_err(|e| format!("{}: {e}", args.out.display()))?
+    };
+    write_face_record(args, &mesh, &vertex_h, record)
 }

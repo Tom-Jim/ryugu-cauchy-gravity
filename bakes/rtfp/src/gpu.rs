@@ -111,16 +111,27 @@ impl Device {
         let inside_pipeline = pipeline(&device, &rays_layout, &rays_module, "inside_probe");
         let rays_pipeline = pipeline(&device, &rays_layout, &rays_module, "rays");
 
-        let analytic_module =
-            shader(&device, "analytic", include_str!("../shaders/analytic.wgsl"));
+        let analytic_module = shader(
+            &device,
+            "analytic",
+            include_str!("../shaders/analytic.wgsl"),
+        );
         let analytic_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("analytic"),
-            entries: &[uniform(0), storage(1, false), storage(2, false), storage(3, true)],
+            entries: &[
+                uniform(0),
+                storage(1, false),
+                storage(2, false),
+                storage(3, true),
+            ],
         });
         let analytic_pipeline = pipeline(&device, &analytic_layout, &analytic_module, "analytic");
 
-        let remainder_module =
-            shader(&device, "remainder", include_str!("../shaders/remainder.wgsl"));
+        let remainder_module = shader(
+            &device,
+            "remainder",
+            include_str!("../shaders/remainder.wgsl"),
+        );
         let remainder_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("remainder"),
             entries: &[
@@ -245,6 +256,9 @@ pub struct Scene {
 
 impl Scene {
     /// Upload the mesh, the BVH and the observation points once.
+    // Every argument is a distinct immutable input buffer of the upload, and
+    // bundling them into a builder would only move the list one level up.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: Device,
         mesh: &Mesh,
@@ -296,7 +310,11 @@ impl Scene {
         let points_block = storage_buffer(&device, "points_block", block_capacity * 16);
         let kernels = storage_buffer(&device, "kernels", max_kernels.max(1) * 8 * 4);
         let counts = storage_buffer(&device, "counts", block_capacity * n_dirs * 4);
-        let ivals = storage_buffer(&device, "ivals", block_capacity * n_dirs * MAX_INTERVALS * 8);
+        let ivals = storage_buffer(
+            &device,
+            "ivals",
+            block_capacity * n_dirs * MAX_INTERVALS * 8,
+        );
         let inside = storage_buffer(&device, "inside", block_capacity * 4);
         let w_out = storage_buffer(&device, "w_out", n_points * 6 * 4);
         let rem_out = storage_buffer(&device, "rem_out", block_capacity * 6 * 4);
@@ -305,7 +323,10 @@ impl Scene {
         let remainder_globals = uniform_buffer(&device, "remainder_globals", 16);
 
         fn entry<'a>(binding: u32, buffer: &'a wgpu::Buffer) -> wgpu::BindGroupEntry<'a> {
-            wgpu::BindGroupEntry { binding, resource: buffer.as_entire_binding() }
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
         }
         let rays_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rays"),
@@ -397,7 +418,9 @@ impl Scene {
         globals[12..16].copy_from_slice(&grid_x.to_le_bytes());
         self.queue.write_buffer(&self.analytic_globals, 0, &globals);
 
-        let mut enc = self.device.create_command_encoder(&empty_encoder("analytic"));
+        let mut enc = self
+            .device
+            .create_command_encoder(&empty_encoder("analytic"));
         {
             let mut pass = enc.begin_compute_pass(&compute_pass("analytic"));
             pass.set_pipeline(&self.analytic_pipeline);
@@ -414,8 +437,19 @@ impl Scene {
         self.queue.submit(Some(enc.finish()));
         let data = self.read_f32(self.n_points * 6)?;
         Ok(data
-            .chunks_exact(6)
-            .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64, c[4] as f64, c[5] as f64])
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|c| {
+                [
+                    c[0] as f64,
+                    c[1] as f64,
+                    c[2] as f64,
+                    c[3] as f64,
+                    c[4] as f64,
+                    c[5] as f64,
+                ]
+            })
             .collect())
     }
 
@@ -435,13 +469,17 @@ impl Scene {
             return Ok(Vec::new());
         }
         if n > self.block_capacity {
-            return Err(format!("block of {n} exceeds capacity {}", self.block_capacity));
+            return Err(format!(
+                "block of {n} exceeds capacity {}",
+                self.block_capacity
+            ));
         }
         if kernels.is_empty() {
             return Ok(vec![[0.0; 6]; n]);
         }
         let pts = points_to_f32(points);
-        self.queue.write_buffer(&self.points_block, 0, as_bytes(&pts));
+        self.queue
+            .write_buffer(&self.points_block, 0, as_bytes(&pts));
         let kbuf = kernels_to_f32(kernels);
         self.queue.write_buffer(&self.kernels, 0, as_bytes(&kbuf));
 
@@ -455,14 +493,16 @@ impl Scene {
         rays_globals[12..16].copy_from_slice(&rays_grid_x.to_le_bytes());
         rays_globals[16..20].copy_from_slice(&t_min.to_le_bytes());
         rays_globals[20..24].copy_from_slice(&t_max.to_le_bytes());
-        self.queue.write_buffer(&self.rays_globals, 0, &rays_globals);
+        self.queue
+            .write_buffer(&self.rays_globals, 0, &rays_globals);
 
         let mut rem_globals = [0u8; 16];
         rem_globals[0..4].copy_from_slice(&(n as u32).to_le_bytes());
         rem_globals[4..8].copy_from_slice(&(dirs.len() as u32).to_le_bytes());
         rem_globals[8..12].copy_from_slice(&(kernels.len() as u32).to_le_bytes());
         rem_globals[12..16].copy_from_slice(&(G as f32).to_le_bytes());
-        self.queue.write_buffer(&self.remainder_globals, 0, &rem_globals);
+        self.queue
+            .write_buffer(&self.remainder_globals, 0, &rem_globals);
 
         let groups = (n as u32).div_ceil(64);
         let mut enc = self.device.create_command_encoder(&empty_encoder("rays"));
@@ -488,8 +528,19 @@ impl Scene {
         self.queue.submit(Some(enc.finish()));
         let data = self.read_f32(n * 6)?;
         Ok(data
-            .chunks_exact(6)
-            .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64, c[4] as f64, c[5] as f64])
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|c| {
+                [
+                    c[0] as f64,
+                    c[1] as f64,
+                    c[2] as f64,
+                    c[3] as f64,
+                    c[4] as f64,
+                    c[5] as f64,
+                ]
+            })
             .collect())
     }
 
@@ -499,15 +550,17 @@ impl Scene {
             return Err("readback buffer too small".into());
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        self.readback.slice(..bytes as u64).map_async(
-            wgpu::MapMode::Read,
-            move |r| {
+        self.readback
+            .slice(..bytes as u64)
+            .map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
-            },
-        );
+            });
         loop {
             self.device
-                .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
                 .map_err(|e| format!("device poll: {e}"))?;
             match rx.try_recv() {
                 Ok(Ok(())) => break,
@@ -519,7 +572,9 @@ impl Scene {
         let mapped = self.readback.slice(..bytes as u64).get_mapped_range();
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            out.push(f32::from_le_bytes(mapped[i * 4..i * 4 + 4].try_into().unwrap()));
+            out.push(f32::from_le_bytes(
+                mapped[i * 4..i * 4 + 4].try_into().unwrap(),
+            ));
         }
         drop(mapped);
         self.readback.unmap();
@@ -539,12 +594,15 @@ fn empty_encoder(label: &str) -> wgpu::CommandEncoderDescriptor<'_> {
 /// `gid.x + gid.y * grid_x * workgroup_size`.
 fn grid_2d(groups: u32) -> (u32, u32) {
     const MAX_X: u32 = 16_384;
-    let grid_x = groups.max(1).min(MAX_X);
+    let grid_x = groups.clamp(1, MAX_X);
     (grid_x, groups.max(1).div_ceil(grid_x))
 }
 
 fn compute_pass(label: &str) -> wgpu::ComputePassDescriptor<'_> {
-    wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None }
+    wgpu::ComputePassDescriptor {
+        label: Some(label),
+        timestamp_writes: None,
+    }
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, size: usize) -> wgpu::Buffer {
@@ -613,7 +671,13 @@ fn mesh_buffers(
         links.extend_from_slice(row);
     }
 
-    let positions = upload(device, queue, "positions", &positions, wgpu::BufferUsages::STORAGE);
+    let positions = upload(
+        device,
+        queue,
+        "positions",
+        &positions,
+        wgpu::BufferUsages::STORAGE,
+    );
     let nodes = upload(device, queue, "nodes", &bounds, wgpu::BufferUsages::STORAGE);
     let indices_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("indices"),
@@ -648,14 +712,14 @@ fn dirs_to_f32(dirs: &Dirs) -> Vec<f32> {
     out
 }
 
-/// Four `vec4<f32>` per face: three corners, then `(unit normal, plane offset)`.
+/// Four `vec4<f32>` per face: three corners, then `(unit normal, density jump)`.
 fn faces_to_f32(faces: &[Face]) -> Vec<f32> {
     let mut out = Vec::with_capacity(faces.len() * 16);
     for f in faces {
         for c in f.corners {
             out.extend_from_slice(&[c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
         }
-        out.extend_from_slice(&[f.n[0] as f32, f.n[1] as f32, f.n[2] as f32, f.d as f32]);
+        out.extend_from_slice(&[f.n[0] as f32, f.n[1] as f32, f.n[2] as f32, f.weight as f32]);
     }
     out
 }

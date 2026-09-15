@@ -8,12 +8,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -32,7 +34,15 @@ static constexpr uint32_t MAGIC = 0x52484746; // 'RHGF'
 static constexpr uint32_t VERSION = 5;
 static constexpr size_t FACE_WINDOW = 128;
 static constexpr size_t FLUSH_EVERY = 16;
-static constexpr size_t DEFAULT_GRID = 128;
+/**
+ * Voxel grid. This is the one accuracy dial the direct sum has: cells are
+ * `extent/grid` wide, and the monopole-per-cell error falls roughly like the
+ * cell size to the 1.7. Measured against the RT-FP Cauchy record at a 16 m
+ * observation surface (same norm, same faces), the discretisation part of the
+ * gap is ≈0.74 % median at 128³ (7.9 m cells) and ≈0.31 % at 192³ (5.2 m);
+ * 256³ reaches ≈0.2 % but costs 8× the 128³ runtime. Override with `--grid`.
+ */
+static constexpr size_t DEFAULT_GRID = 192;
 
 struct Mesh {
     std::vector<double> xyz;
@@ -227,57 +237,145 @@ static bool load_order(const char *path, size_t nf, std::vector<uint32_t> &order
     return true;
 }
 
-/** Minimal parser for the cauchy.toml kernel table (do not require full TOML). */
+/**
+ * Read one number at `at`. Returns false when there is none.
+ */
+static bool toml_number(const std::string &s, size_t at, double &out, size_t *next = nullptr) {
+    size_t q = at;
+    while (q < s.size() && std::isspace(static_cast<unsigned char>(s[q]))) ++q;
+    char *end = nullptr;
+    out = std::strtod(s.c_str() + q, &end);
+    if (end == s.c_str() + q) return false;
+    if (next) *next = static_cast<size_t>(end - s.c_str());
+    return true;
+}
+
+/**
+ * Position just past `key` in `key = ...`, or `std::string::npos`.
+ *
+ * The key has to be a whole token: `c` must not match the `c` of `core`, which
+ * is what makes the search safe on a text that still contains role names.
+ */
+static size_t toml_key(const std::string &s, const char *key) {
+    const std::string pat(key);
+    for (size_t pos = s.find(pat); pos != std::string::npos; pos = s.find(pat, pos + 1)) {
+        const bool left_ok = pos == 0
+            || !(std::isalnum(static_cast<unsigned char>(s[pos - 1])) || s[pos - 1] == '_');
+        size_t q = pos + pat.size();
+        if (!left_ok || q >= s.size()) continue;
+        if (!std::isspace(static_cast<unsigned char>(s[q])) && s[q] != '=') continue;
+        while (q < s.size() && std::isspace(static_cast<unsigned char>(s[q]))) ++q;
+        if (q < s.size() && s[q] == '=') return q + 1;
+    }
+    return std::string::npos;
+}
+
+/** `key = <number>` out of one kernel record. */
+static bool record_scalar(const std::string &s, const char *key, double &out) {
+    const size_t after = toml_key(s, key);
+    return after != std::string::npos && toml_number(s, after, out);
+}
+
+/** `key = [x, y, z]` out of one kernel record. */
+static bool record_vector3(const std::string &s, const char *key, double out[3]) {
+    size_t q = toml_key(s, key);
+    if (q == std::string::npos) return false;
+    while (q < s.size() && std::isspace(static_cast<unsigned char>(s[q]))) ++q;
+    if (q >= s.size() || s[q] != '[') return false;
+    ++q;
+    for (int n = 0; n < 3; ++n) {
+        while (q < s.size()
+               && (std::isspace(static_cast<unsigned char>(s[q])) || s[q] == ','))
+            ++q;
+        if (!toml_number(s, q, out[n], &q)) return false;
+    }
+    return true;
+}
+
+/**
+ * Reader for the Cauchy-kernel density file.
+ *
+ * Deliberately minimal: the Rust host parses the TOML properly, but the two
+ * layouts this project writes for the same `kernels` table are simple enough
+ * that a full TOML dependency is not needed here. Both are accepted:
+ *
+ *   [[kernels]]                     kernels = [
+ *   c = [..]                          { c = [..], sigma = .., w = .. },
+ *   sigma = ..                      ]
+ *
+ * Comments are removed first; each kernel is then reduced to the `key = value`
+ * pairs inside its braces, or between its table header and the next one.
+ */
 static DensityModel load_cauchy_toml(const char *path) {
-    DensityModel model;
     std::ifstream in(path);
     if (!in) throw std::runtime_error(std::string("cannot open density toml: ") + path);
-    std::string line;
-    Kernel cur{};
-    bool in_kernel = false;
-    auto flush = [&]() {
-        if (in_kernel && cur.sigma > 0.0) {
-            if (cur.alpha <= 0.0) cur.alpha = 1.0;
-            model.kernels.push_back(cur);
-        }
-        cur = Kernel{};
-        in_kernel = false;
-    };
-    while (std::getline(in, line)) {
-        auto trim = [](std::string &s) {
-            while (!s.empty() && (s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
-                s.pop_back();
-            size_t i = 0;
-            while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
-            s.erase(0, i);
-        };
-        trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        if (line.rfind("total_mass_target", 0) == 0) {
-            std::sscanf(line.c_str(), "total_mass_target = %lf", &model.total_mass_target);
+    const std::string raw((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+
+    std::string text;
+    text.reserve(raw.size());
+    bool quoted = false;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const char c = raw[i];
+        if (quoted) {
+            text.push_back(c);
+            if (c == '\\' && i + 1 < raw.size()) {
+                text.push_back(raw[++i]);
+            } else if (c == '"') {
+                quoted = false;
+            }
             continue;
         }
-        if (line.rfind("bulk_density_ref", 0) == 0) {
-            std::sscanf(line.c_str(), "bulk_density_ref = %lf", &model.bulk_density_ref);
-            continue;
-        }
-        if (line == "[[kernels]]") {
-            flush();
-            in_kernel = true;
-            continue;
-        }
-        if (!in_kernel) continue;
-        if (line.rfind("c =", 0) == 0) {
-            std::sscanf(line.c_str(), "c = [%lf, %lf, %lf]", &cur.c[0], &cur.c[1], &cur.c[2]);
-        } else if (line.rfind("sigma", 0) == 0) {
-            std::sscanf(line.c_str(), "sigma = %lf", &cur.sigma);
-        } else if (line.rfind("w =", 0) == 0 || line.rfind("w=", 0) == 0) {
-            std::sscanf(line.c_str(), "w = %lf", &cur.w);
-        } else if (line.rfind("alpha", 0) == 0) {
-            std::sscanf(line.c_str(), "alpha = %lf", &cur.alpha);
+        if (c == '"') {
+            quoted = true;
+            text.push_back(c);
+        } else if (c == '#') {
+            while (i < raw.size() && raw[i] != '\n') ++i;
+            text.push_back('\n');
+        } else {
+            text.push_back(c);
         }
     }
-    flush();
+
+    DensityModel model;
+    double value = 0.0;
+    if (record_scalar(text, "total_mass_target", value)) model.total_mass_target = value;
+    if (record_scalar(text, "bulk_density_ref", value)) model.bulk_density_ref = value;
+
+    auto push = [&model](const std::string &rec) {
+        Kernel k{};
+        if (!record_vector3(rec, "c", k.c)) return;
+        if (!record_scalar(rec, "sigma", k.sigma)) return;
+        if (!record_scalar(rec, "w", k.w)) return;
+        if (!record_scalar(rec, "alpha", k.alpha) || k.alpha <= 0.0) k.alpha = 1.0;
+        // A vanishing or negative sigma would make the kernel a constant or make
+        // the density grow with distance; neither is a density this file means.
+        if (!(k.sigma > 0.0)) return;
+        model.kernels.push_back(k);
+    };
+
+    // Inline array form: every `{ ... }` group.
+    for (size_t i = text.find('{'); i != std::string::npos; i = text.find('{', i + 1)) {
+        const size_t close = text.find('}', i);
+        if (close == std::string::npos) break;
+        push(text.substr(i + 1, close - i - 1));
+        i = close;
+    }
+
+    // Table form: `[[kernels]]` up to the next table header.
+    for (size_t i = text.find("[[kernels]]"); i != std::string::npos;
+         i = text.find("[[kernels]]", i + 1)) {
+        const size_t body = i + std::strlen("[[kernels]]");
+        size_t end = text.size();
+        for (size_t j = body; j + 1 < text.size(); ++j) {
+            if (text[j] == '\n' && text[j + 1] == '[') {
+                end = j;
+                break;
+            }
+        }
+        push(text.substr(body, end - body));
+    }
+
     if (model.kernels.empty()) throw std::runtime_error("no Cauchy kernels in toml");
     return model;
 }

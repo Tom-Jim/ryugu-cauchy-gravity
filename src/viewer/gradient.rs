@@ -105,7 +105,6 @@ fn robust_quantiles(scalars: &[f32]) -> Option<(f32, f32, f32)> {
     Some((at(0.02), at(0.5), at(0.98)))
 }
 
-
 /// The scalar → colour window shared by **every** viewer path.
 ///
 /// Werner bake, mascon bake and RT-FP all derive their window with
@@ -183,7 +182,8 @@ pub fn display_window_for(scalars: &[f32]) -> DisplayWindow {
     let Some((lo, med, hi)) = robust_quantiles(scalars) else {
         return DisplayWindow::default();
     };
-    if !(hi > lo) {
+    // `!(hi > lo)` also catches a non-finite pair; state it the readable way.
+    if !hi.is_finite() || !lo.is_finite() || hi <= lo {
         // Degenerate (constant) field: pin it to the bottom of the ramp.
         let hi = lo + (lo.abs() * 1e-6).max(1e-30);
         return DisplayWindow {
@@ -217,7 +217,6 @@ pub fn colormap_scalar(window: &DisplayWindow, s: f32) -> Option<[f32; 4]> {
     window.map(s).map(colormap_rgba)
 }
 
-
 pub fn face_vertex_indices(mesh: &Mesh) -> Option<Vec<u32>> {
     if let Some(raw) = mesh.indices() {
         let indices: Vec<u32> = match raw {
@@ -240,7 +239,8 @@ pub fn face_vertex_indices(mesh: &Mesh) -> Option<Vec<u32>> {
 /// Returns (exploded mesh, face indices as 0,1,2, 3,4,5, ...).
 pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
     let indices = face_vertex_indices(src)?;
-    let Some(VertexAttributeValues::Float32x3(pos)) = src.attribute(Mesh::ATTRIBUTE_POSITION) else {
+    let Some(VertexAttributeValues::Float32x3(pos)) = src.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
         return None;
     };
     let normals = match src.attribute(Mesh::ATTRIBUTE_NORMAL) {
@@ -264,16 +264,8 @@ pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
         let p1 = pos[i1];
         let p2 = pos[i2];
         let face_n = {
-            let e1 = [
-                p1[0] - p0[0],
-                p1[1] - p0[1],
-                p1[2] - p0[2],
-            ];
-            let e2 = [
-                p2[0] - p0[0],
-                p2[1] - p0[1],
-                p2[2] - p0[2],
-            ];
+            let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
             let cx = e1[1] * e2[2] - e1[2] * e2[1];
             let cy = e1[2] * e2[0] - e1[0] * e2[2];
             let cz = e1[0] * e2[1] - e1[1] * e2[0];
@@ -283,11 +275,7 @@ pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
         for (k, &vi) in [i0, i1, i2].iter().enumerate() {
             new_pos.push(pos[vi]);
             if let Some(nattr) = normals {
-                new_nor.push(if vi < nattr.len() {
-                    nattr[vi]
-                } else {
-                    face_n
-                });
+                new_nor.push(if vi < nattr.len() { nattr[vi] } else { face_n });
             } else {
                 new_nor.push(face_n);
             }

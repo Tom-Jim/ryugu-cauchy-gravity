@@ -49,8 +49,10 @@ pub struct Face {
     /// Unit outward normal, `normal(v1−v0, v2−v1)` (the ESA library's
     /// `buildUnitNormalOfPlane`), so the orientation matches the Werner record.
     pub n: [f64; 3],
-    /// Plane offset: `n · y = d` for `y` on the face.
-    pub d: f64,
+    /// Density jump across the face, in kg/m³. `precompute` leaves this at 1 so
+    /// the polyhedral tensor stays "per unit density"; `carlson.rs` fills in the
+    /// per-face Δρ of its density-jump surface representation instead.
+    pub weight: f64,
 }
 
 /// Precompute the point-independent face data (once per mesh).
@@ -63,8 +65,15 @@ pub fn precompute(mesh: &Mesh) -> Vec<Face> {
             mesh.vertex(i1 as usize),
             mesh.vertex(i2 as usize),
         ];
-        let n = normalize(cross(sub(corners[1], corners[0]), sub(corners[2], corners[1])));
-        out.push(Face { corners, n, d: dot(n, corners[0]) });
+        let n = normalize(cross(
+            sub(corners[1], corners[0]),
+            sub(corners[2], corners[1]),
+        ));
+        out.push(Face {
+            corners,
+            n,
+            weight: 1.0,
+        });
     }
     out
 }
@@ -121,9 +130,13 @@ pub fn face_integral(f: &Face, x: [f64; 3]) -> [f64; 3] {
             i_vec[k] += outward[k] * log_term;
         }
     }
-    let omega = solid_angle(sub(f.corners[0], x), sub(f.corners[1], x), sub(f.corners[2], x));
-    for k in 0..3 {
-        i_vec[k] += omega * f.n[k];
+    let omega = solid_angle(
+        sub(f.corners[0], x),
+        sub(f.corners[1], x),
+        sub(f.corners[2], x),
+    );
+    for (slot, n) in i_vec.iter_mut().zip(f.n) {
+        *slot += omega * n;
     }
     i_vec
 }
@@ -132,12 +145,13 @@ pub fn face_integral(f: &Face, x: [f64; 3]) -> [f64; 3] {
 #[inline]
 pub fn add_face(w: &mut Sym6, f: &Face, x: [f64; 3]) {
     let i_vec = face_integral(f, x);
-    w[0] += G * f.n[0] * i_vec[0];
-    w[1] += G * f.n[1] * i_vec[1];
-    w[2] += G * f.n[2] * i_vec[2];
-    w[3] += G * f.n[0] * i_vec[1];
-    w[4] += G * f.n[0] * i_vec[2];
-    w[5] += G * f.n[1] * i_vec[2];
+    let k = G * f.weight;
+    w[0] += k * f.n[0] * i_vec[0];
+    w[1] += k * f.n[1] * i_vec[1];
+    w[2] += k * f.n[2] * i_vec[2];
+    w[3] += k * f.n[0] * i_vec[1];
+    w[4] += k * f.n[0] * i_vec[2];
+    w[5] += k * f.n[1] * i_vec[2];
 }
 
 /// `W(x)` for unit density (the caller scales by the density at `x`).

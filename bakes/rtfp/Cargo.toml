@@ -10,6 +10,14 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 wgpu = "29"
 
+[features]
+default = []
+# Link the vendored ESA polyhedral-gravity library, which `--selftest` uses as an
+# independent closed-form reference. It requires a local C++ checkout:
+#   bun run esa:configure && bun run bakes:build
+# Neither solver needs it, so a bare checkout builds and tests without it.
+esa = []
+
 [dev-dependencies]
 
 [profile.release]

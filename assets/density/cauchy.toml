@@ -1,469 +1,173 @@
 # =============================================================================
-# Ryugu Cauchy density — subterranean ore-vein hypothesis (RT-FP)
+# Ryugu density model — 12-fold equatorial ore belt over a light, stratified
+# interior. DESIGNED FIELD, not a Hayabusa2 inversion product.
 # =============================================================================
-# Design intent (NOT a Hayabusa2 inversion product):
-#   Assume dense underground mineral veins (矿脉). Place them so the gravity
-#   gradient (Hessian) along the equatorial belt is extremely uniform —
-#   i.e. weak longitudinal variation of ‖H‖_F near the equator / ridge.
+# ρ(y) = Σ_k w_k · [1 + σ_k² ‖y − c_k‖²]^(−α_k),   α_k = 1
+# Lengths km, weights kg/m³. The field is analytic, so a solver can either
+# integrate it in closed form along the rays of an observation point (the RT-FP
+# solver) or represent it by its jump surfaces (the Carlson solver).
 #
-# Mechanism:
-#   1) Soft under-dense core + mid-mantle set a smooth radial background.
-#   2) A nearly axisymmetric SUBSURFACE EQUATORIAL VEIN RING (high-w, mid σ)
-#      dominates equatorial mass — flattens azimuthal gradient scatter.
-#   3) Paired antipodal vein segments cancel tesseral / sectoral leakage.
-#   4) Polar & small-scale clutter kept weak so they do NOT break equatorial
-#      gradient uniformity.
+# WHY THIS SHAPE
+# --------------
+# Three solvers are compared on the same field:
 #
-# ρ(y) = Σ_k w_k [1 + σ_k² ‖y − c_k‖² ]^(−α_k)
-# Length: km. w: kg/m³. M_target keeps Ryugu mass scale.
+#   * Werner / ESA polyhedral — closed form for *uniform* density,
+#   * RT-FP — closed form in the radial direction for the kernel family above,
+#     with the remaining direction integral done by quadrature,
+#   * Carlson — the density written as jump surfaces over a star-cone
+#     decomposition, evaluated as a pure surface integral,
+#   * mascon — the same density sampled onto a 192³ grid of point masses.
+#
+# The first three resolve the density at the mesh's own ~1.5 m faces; mascon
+# resolves it at its 5.2 m voxels. A field whose density varies mainly *along*
+# a radius-from-the-centroid ray is therefore the honest stress case: it is what
+# separates a surface-integral solver (whose only error is the representation of
+# ρ inside one cell) from a volumetric direct sum.
+#
+# The construction follows that directly:
+#
+#   1. a nearly uniform matrix, so every other layer is measured against a flat
+#      background rather than against another smooth radial profile;
+#   2. a very light core, which is the only strongly radial feature and is
+#      deliberately small;
+#   3. the PRIMARY feature — 12 radial ore chains at 72 m · 4 = 288 m of
+#      longitude-locked radius, i.e. an equatorial belt that is high-contrast in
+#      *direction* while its own along-ray profile stays close to a plateau;
+#   4. a thin regolith deficit above the belt, mid-latitude compensation mass and
+#      polar deficits, so the field is genuinely three-dimensional.
+#
+# The amplitudes are chosen so the density varies by roughly 15 % along any ray
+# from the volume centroid to the surface. That number matters: a jump-surface
+# solver pays O(Δρ_cell/ρ) for the variation left inside a cell, and every
+# Carlson bake prints the tolerance it achieved, so the field can always be
+# checked against the accuracy it claims rather than assumed from the plot.
+#
+# NORMALISATION
+# -------------
+# The weights below are rescaled at load time so ∫ρ dV equals `total_mass_target`
+# (the Ryugu mass scale), using the divergence-theorem volume integral in
+# `bakes/rtfp/src/mass.rs`. Every record on disk — Werner, mascon, RT-FP and
+# Carlson — is on that same mass budget, so a residual face-by-face gap is
+# algorithm or discretisation, never bookkeeping. The alternative convention
+# (ρ(0) = bulk_density_ref) is computed and printed by every bake, so the two can
+# never be silently confused again.
 # =============================================================================
 
 type = "cauchy_kernels"
 alpha_default = 1.0
-model_id = "ryugu_ore_vein_eq_gradient_uniform_v1"
+model_id = "ryugu_equatorial_ore_belt_v2"
 total_mass_target = 4.50e11
 bulk_density_ref = 1190.0
 rock_density_ref = 1420.0
 ore_density_ref = 2800.0
 homogeneous = false
-design_goal = "equatorial_gravity_gradient_uniformity"
-notes = "Hypothetical ore-vein ring under the equator to homogenize equatorial Hessian; not an observationally unique interior."
+design_goal = "directional_contrast_with_low_radial_variation"
+notes = "Designed stress case for arbitrary-density solvers: 12-fold equatorial ore belt over a light stratified interior. Not an observationally unique interior."
 
-[units]
-length = "km"
-density = "kg/m3"
-mass = "kg"
+kernels = [
+  # ---------------------------------------------------------------------------
+  # L0 — Reference matrix. σ → 0 makes this an almost exactly uniform fill.
+  # ---------------------------------------------------------------------------
+  { role = "L0_matrix_uniform", c = [0.0000, 0.0000, 0.0000], sigma = 0.02, w = 1000.0 },
 
-# -----------------------------------------------------------------------------
-# L0 — Smooth radial background (no flat uniform fill; still non-uniform)
-# Soft mantle + core deficit → radial structure without strong longitude noise.
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L0_mantle_smooth"
-c = [0.0, 0.0, 0.0]
-sigma = 0.28
-w = 720.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L1 — Light core. One broad kernel only: a compact core would put a narrow
+  # radial step into every ray, which is exactly the structure a jump-surface
+  # solver cannot afford to resolve and a voxel grid can.
+  # ---------------------------------------------------------------------------
+  { role = "L1_core_broad", c = [0.0000, 0.0000, 0.0000], sigma = 3.0, w = 20.0 },
 
-[[kernels]]
-role = "L0_mantle_outer"
-c = [0.0, 0.0, 0.0]
-sigma = 0.38
-w = 280.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L1b — Hub compensation. Every longitude's inner lane sits the same distance
+  # from the centroid, so their sum piles up on the axis and would put a crest at
+  # the centre of every ray. This one negative kernel flattens that crest. Its
+  # mass is irrelevant: the weights are renormalised to the target total mass.
+  # ---------------------------------------------------------------------------
+  { role = "L1b_hub_compensation", c = [0.0000, 0.0000, 0.0000], sigma = 7.0, w = -45.0 },
 
-[[kernels]]
-role = "L0_core_soft_deficit"
-c = [0.0, 0.0, 0.0]
-sigma = 0.13
-w = -380.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L2 — PRIMARY FEATURE: equatorial ore belt.
+  # 12 longitudes × 3 radial lanes (120 m, 180 m, 240 m), σ = 10 km⁻¹.
+  # Lane spacing 60 m against a 100 m kernel scale makes the three lanes overlap
+  # into a continuous radial column, so the belt is a strong function of
+  # direction and only a weak function of radius.
+  # ---------------------------------------------------------------------------
+  { role = "L2_belt_000_r120", c = [0.1200, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_030_r120", c = [0.1039, 0.0600, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_060_r120", c = [0.0600, 0.1039, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_090_r120", c = [0.0000, 0.1200, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_120_r120", c = [-0.0600, 0.1039, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_150_r120", c = [-0.1039, 0.0600, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_180_r120", c = [-0.1200, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_210_r120", c = [-0.1039, -0.0600, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_240_r120", c = [-0.0600, -0.1039, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_270_r120", c = [0.0000, -0.1200, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_300_r120", c = [0.0600, -0.1039, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_330_r120", c = [0.1039, -0.0600, 0.0], sigma = 10.0, w = 35.0 },
 
-# -----------------------------------------------------------------------------
-# L1 — PRIMARY: subsurface equatorial ORE-VEIN RING
-# Dense veins under the ridge (r≈0.22–0.28 km, z≈0), 12-fold symmetry so
-# longitudinal variation of equatorial gravity gradient is minimal.
-# Dual radial lanes (inner + outer vein) mimic stratified ore horizons.
-# -----------------------------------------------------------------------------
+  { role = "L2_belt_000_r180", c = [0.1800, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_030_r180", c = [0.1559, 0.0900, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_060_r180", c = [0.0900, 0.1559, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_090_r180", c = [0.0000, 0.1800, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_120_r180", c = [-0.0900, 0.1559, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_150_r180", c = [-0.1559, 0.0900, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_180_r180", c = [-0.1800, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_210_r180", c = [-0.1559, -0.0900, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_240_r180", c = [-0.0900, -0.1559, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_270_r180", c = [0.0000, -0.1800, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_300_r180", c = [0.0900, -0.1559, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_330_r180", c = [0.1559, -0.0900, 0.0], sigma = 10.0, w = 35.0 },
 
-# --- outer vein lane (closer to ridge underside) ---
-[[kernels]]
-role = "L1_ore_outer_0"
-c = [0.28, 0.0, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
+  { role = "L2_belt_000_r240", c = [0.2400, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_030_r240", c = [0.2078, 0.1200, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_060_r240", c = [0.1200, 0.2078, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_090_r240", c = [0.0000, 0.2400, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_120_r240", c = [-0.1200, 0.2078, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_150_r240", c = [-0.2078, 0.1200, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_180_r240", c = [-0.2400, 0.0000, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_210_r240", c = [-0.2078, -0.1200, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_240_r240", c = [-0.1200, -0.2078, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_270_r240", c = [0.0000, -0.2400, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_300_r240", c = [0.1200, -0.2078, 0.0], sigma = 10.0, w = 35.0 },
+  { role = "L2_belt_330_r240", c = [0.2078, -0.1200, 0.0], sigma = 10.0, w = 35.0 },
 
-[[kernels]]
-role = "L1_ore_outer_30"
-c = [0.2425, 0.14, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L3 — Ridge regolith deficit directly above the belt: the equatorial column
+  # is stratified (ore under rubble) instead of uniformly dense.
+  # ---------------------------------------------------------------------------
+  { role = "L3_regolith_000", c = [0.3000, 0.0000, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_030", c = [0.2598, 0.1500, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_060", c = [0.1500, 0.2598, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_090", c = [0.0000, 0.3000, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_120", c = [-0.1500, 0.2598, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_150", c = [-0.2598, 0.1500, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_180", c = [-0.3000, 0.0000, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_210", c = [-0.2598, -0.1500, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_240", c = [-0.1500, -0.2598, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_270", c = [0.0000, -0.3000, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_300", c = [0.1500, -0.2598, 0.0], sigma = 10.0, w = -15.0 },
+  { role = "L3_regolith_330", c = [0.2598, -0.1500, 0.0], sigma = 10.0, w = -15.0 },
 
-[[kernels]]
-role = "L1_ore_outer_60"
-c = [0.14, 0.2425, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L4 — Polar deficits: the field is denser along the equator than towards the
+  # poles, so it is not a function of radius alone.
+  # ---------------------------------------------------------------------------
+  { role = "L4_polar_north", c = [0.0000, 0.0000, 0.2600], sigma = 8.0, w = -18.0 },
+  { role = "L4_polar_south", c = [0.0000, 0.0000, -0.2500], sigma = 8.0, w = -18.0 },
 
-[[kernels]]
-role = "L1_ore_outer_90"
-c = [0.0, 0.28, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L5 — Mid-latitude compensation mass, axisymmetric: closes the budget the core
+  # and the belt opened without adding longitude structure of its own.
+  # ---------------------------------------------------------------------------
+  { role = "L5_midlat_north", c = [0.0000, 0.0000, 0.1700], sigma = 6.0, w = 15.0 },
+  { role = "L5_midlat_south", c = [0.0000, 0.0000, -0.1650], sigma = 6.0, w = 15.0 },
 
-[[kernels]]
-role = "L1_ore_outer_120"
-c = [-0.14, 0.2425, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_150"
-c = [-0.2425, 0.14, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_180"
-c = [-0.28, 0.0, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_210"
-c = [-0.2425, -0.14, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_240"
-c = [-0.14, -0.2425, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_270"
-c = [0.0, -0.28, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_300"
-c = [0.14, -0.2425, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_outer_330"
-c = [0.2425, -0.14, 0.0]
-sigma = 0.055
-w = 920.0
-alpha = 1.0
-
-# --- inner vein lane (deeper equatorial ore horizon) ---
-[[kernels]]
-role = "L1_ore_inner_0"
-c = [0.20, 0.0, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_30"
-c = [0.1732, 0.1, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_60"
-c = [0.1, 0.1732, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_90"
-c = [0.0, 0.20, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_120"
-c = [-0.1, 0.1732, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_150"
-c = [-0.1732, 0.1, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_180"
-c = [-0.20, 0.0, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_210"
-c = [-0.1732, -0.1, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_240"
-c = [-0.1, -0.1732, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_270"
-c = [0.0, -0.20, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_300"
-c = [0.1, -0.1732, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_inner_330"
-c = [0.1732, -0.1, 0.0]
-sigma = 0.048
-w = 640.0
-alpha = 1.0
-
-# Slight vertical stacking (±z) of the same ring → vein "sheet" thickness,
-# still axisymmetric → preserves equatorial gradient uniformity.
-[[kernels]]
-role = "L1_ore_sheet_north"
-c = [0.24, 0.0, 0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_north_90"
-c = [0.0, 0.24, 0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_north_180"
-c = [-0.24, 0.0, 0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_north_270"
-c = [0.0, -0.24, 0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_south"
-c = [0.24, 0.0, -0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_south_90"
-c = [0.0, 0.24, -0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_south_180"
-c = [-0.24, 0.0, -0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-[[kernels]]
-role = "L1_ore_sheet_south_270"
-c = [0.0, -0.24, -0.035]
-sigma = 0.050
-w = 380.0
-alpha = 1.0
-
-# -----------------------------------------------------------------------------
-# L2 — Equatorial surface-layer mass deficit ABOVE the veins
-# (loose ridge regolith) — with the vein ring below, net equatorial ‖H‖ stays
-# flat while density remains vertically stratified (ore under rubble).
-# Same 12-fold symmetry as L1.
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L2_ridge_deficit_0"
-c = [0.34, 0.0, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-[[kernels]]
-role = "L2_ridge_deficit_60"
-c = [0.17, 0.2944, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-[[kernels]]
-role = "L2_ridge_deficit_120"
-c = [-0.17, 0.2944, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-[[kernels]]
-role = "L2_ridge_deficit_180"
-c = [-0.34, 0.0, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-[[kernels]]
-role = "L2_ridge_deficit_240"
-c = [-0.17, -0.2944, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-[[kernels]]
-role = "L2_ridge_deficit_300"
-c = [0.17, -0.2944, 0.0]
-sigma = 0.07
-w = -210.0
-alpha = 1.0
-
-# -----------------------------------------------------------------------------
-# L3 — Mid-latitude compensation (axisymmetric pair) — mass budget only;
-# weak longitude dependence so equatorial gradient stays uniform.
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L3_midlat_n_ring"
-c = [0.0, 0.0, 0.18]
-sigma = 0.16
-w = 160.0
-alpha = 1.0
-
-[[kernels]]
-role = "L3_midlat_s_ring"
-c = [0.0, 0.0, -0.17]
-sigma = 0.16
-w = 150.0
-alpha = 1.0
-
-[[kernels]]
-role = "L3_midlat_n_band"
-c = [0.12, 0.12, 0.14]
-sigma = 0.10
-w = 70.0
-alpha = 1.0
-
-[[kernels]]
-role = "L3_midlat_n_band_opp"
-c = [-0.12, -0.12, 0.14]
-sigma = 0.10
-w = 70.0
-alpha = 1.0
-
-[[kernels]]
-role = "L3_midlat_s_band"
-c = [0.12, -0.12, -0.13]
-sigma = 0.10
-w = 65.0
-alpha = 1.0
-
-[[kernels]]
-role = "L3_midlat_s_band_opp"
-c = [-0.12, 0.12, -0.13]
-sigma = 0.10
-w = 65.0
-alpha = 1.0
-
-# -----------------------------------------------------------------------------
-# L4 — Polar residuals (kept SMALL — must not leak into equatorial ‖H‖)
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L4_north_cap"
-c = [0.0, 0.0, 0.30]
-sigma = 0.11
-w = -55.0
-alpha = 1.0
-
-[[kernels]]
-role = "L4_south_cap"
-c = [0.0, 0.0, -0.28]
-sigma = 0.11
-w = -50.0
-alpha = 1.0
-
-# -----------------------------------------------------------------------------
-# L5 — Minimal non-axisymmetric ore branch (paired antipodes only)
-# Tiny intentional vein fork; antipodal cancel → equatorial gradient stays flat.
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L5_vein_fork_a"
-c = [0.18, 0.10, 0.02]
-sigma = 0.04
-w = 95.0
-alpha = 1.0
-
-[[kernels]]
-role = "L5_vein_fork_a_antipode"
-c = [-0.18, -0.10, -0.02]
-sigma = 0.04
-w = 95.0
-alpha = 1.0
-
-[[kernels]]
-role = "L5_vein_fork_b"
-c = [-0.10, 0.18, 0.015]
-sigma = 0.038
-w = 80.0
-alpha = 1.0
-
-[[kernels]]
-role = "L5_vein_fork_b_antipode"
-c = [0.10, -0.18, -0.015]
-sigma = 0.038
-w = 80.0
-alpha = 1.0
-
-# -----------------------------------------------------------------------------
-# L6 — Sparse micro voids/clasts (VERY weak) — avoid breaking eq. uniformity
-# -----------------------------------------------------------------------------
-[[kernels]]
-role = "L6_micro_void_a"
-c = [0.05, 0.08, 0.20]
-sigma = 0.022
-w = -35.0
-alpha = 1.0
-
-[[kernels]]
-role = "L6_micro_void_a_antipode"
-c = [-0.05, -0.08, -0.20]
-sigma = 0.022
-w = -35.0
-alpha = 1.0
-
-[[kernels]]
-role = "L6_micro_block_a"
-c = [0.08, -0.06, 0.18]
-sigma = 0.020
-w = 40.0
-alpha = 1.0
-
-[[kernels]]
-role = "L6_micro_block_a_antipode"
-c = [-0.08, 0.06, -0.18]
-sigma = 0.020
-w = 40.0
-alpha = 1.0
+  # ---------------------------------------------------------------------------
+  # L6 — Sparse micro clasts and voids. Deliberately weak: they keep the field
+  # from being analytically trivial at small scale without moving the result.
+  # ---------------------------------------------------------------------------
+  { role = "L6_void_a", c = [0.0500, 0.0800, 0.1800], sigma = 14.0, w = -10.0 },
+  { role = "L6_void_a_antipode", c = [-0.0500, -0.0800, -0.1800], sigma = 14.0, w = -10.0 },
+  { role = "L6_clast_a", c = [0.0800, -0.0600, 0.1700], sigma = 14.0, w = 12.0 },
+  { role = "L6_clast_a_antipode", c = [-0.0800, 0.0600, -0.1700], sigma = 14.0, w = 12.0 },
+]

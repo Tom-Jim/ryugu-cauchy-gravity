@@ -1,0 +1,32 @@
+# Dependencies move fast on both toolchains, so let the bot keep the three
+# manifests current rather than discovering drift a year from now.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /bakes/rtfp
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      rust-bake:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      rust-viewer:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

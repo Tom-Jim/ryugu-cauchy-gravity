@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The numerical core. This is the job that matters: it owns every closed-form
+  # identity and every cross-solver check that can run without a GPU.
+  # ---------------------------------------------------------------------------
+  bake-core:
+    name: Rust · bake host
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bakes/rtfp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bakes/rtfp
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The vendored ESA reference library is a separate cargo feature and is not
+      # linked here: the solvers themselves do not need it. Tests that require the
+      # external 200k-face OBJ skip themselves and report the skip.
+      - name: Tests
+        run: cargo test --release
+
+  # ---------------------------------------------------------------------------
+  # The viewer is a WebAssembly application, so the deployment target is what has
+  # to compile, not the host.
+  # ---------------------------------------------------------------------------
+  viewer:
+    name: Rust · WASM viewer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Lints
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Build
+        run: cargo build --release --target wasm32-unknown-unknown
+
+  # ---------------------------------------------------------------------------
+  # Control surface: types, plus a boot smoke test of the development server.
+  # ---------------------------------------------------------------------------
+  web:
+    name: Bun · server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Server answers
+        run: |
+          bun src/server/server.ts &
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/api/werner/status > /dev/null; then
+              echo "server is up"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "the development server never answered"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Bundle: a push to the default branch also produces the deployable WASM
+  # package, so a release never depends on a developer's machine.
+  # ---------------------------------------------------------------------------
+  bundle:
+    name: WASM bundle
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: Build the viewer package
+        run: bun run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ryugu-h-cal-wasm
+          path: pkg/
+          if-no-files-found: error

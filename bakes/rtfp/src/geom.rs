@@ -96,13 +96,7 @@ pub fn bvh_crossings(
 }
 
 /// Möller–Trumbore in f64, no backface culling.
-fn intersect(
-    v0: [f64; 3],
-    v1: [f64; 3],
-    v2: [f64; 3],
-    o: [f64; 3],
-    d: [f64; 3],
-) -> Option<f64> {
+fn intersect(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], o: [f64; 3], d: [f64; 3]) -> Option<f64> {
     let e1 = sub(v1, v0);
     let e2 = sub(v2, v0);
     let pvec = cross(d, e2);

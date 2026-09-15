@@ -1,8 +1,21 @@
-/** Mascon voxel bake — same RHGF v5 checkpoint protocol as Werner. */
+/**
+ * Mascon solver endpoint — the mainstream voxel direct-summation baseline.
+ *
+ * A mascon ("mass concentration") model replaces the body with a regular grid
+ * of point masses, so the gravity-gradient tensor is a plain O(N) sum over
+ * 192^3 = 7.1e6 voxels per evaluation point. It is the algorithm most
+ * commonly used in flight dynamics, which is exactly why it is here: it is the
+ * reference the reader is presumed to already trust.
+ *
+ * It shares no machinery with the other solvers — different binary, different
+ * progress dialect, different failure modes — but it writes the same RHGF v5
+ * record, so the viewer and the comparison panel treat it identically.
+ */
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
+import { corsJson } from "./gpu_solver";
 
-const ROOT = join(import.meta.dir, "../..");
+const ROOT = join(import.meta.dir, "../../..");
 const MASCON_BIN = join(ROOT, "bakes/build/ryugu_mascon_bake_cpp");
 const MASCON_OBJ =
   Bun.env.BAKE_OBJ ??
@@ -12,7 +25,11 @@ const MASCON_ORDER = join(ROOT, "assets/records/.mascon_order.bin");
 const MASCON_LOG = join(ROOT, "assets/records/.mascon_progress.log");
 const MASCON_DENSITY = join(ROOT, "assets/density/cauchy.toml");
 const MASCON_MAGIC = 0x52484746;
-const MASCON_GRID = Number(Bun.env.MASCON_GRID ?? 128);
+/**
+ * 192³ halved the discretisation gap against RT-FP (0.74 % → 0.31 % median at a
+ * 16 m standoff); 256³ is better still but 8× slower than 128³.
+ */
+const MASCON_GRID = Number(Bun.env.MASCON_GRID ?? 192);
 /**
  * Slider bounds: 1 mm – 32 m. Mascon is a voxel direct sum with 7.9 m cells, so
  * 1 mm is meaningless for it: at 1 mm the field is ~250 % off, at 16 m (two cells
@@ -39,7 +56,7 @@ let masconStatus: MasconStatus = {
   current: 0,
   total: 0,
   percent: 0,
-  message: "未开始",
+  message: "Not started",
   error: "",
   canResume: false,
 };
@@ -53,16 +70,6 @@ function clampStandoffMm(mm: unknown): number {
 /** Status payload plus the observation height the record was baked at. */
 function masconPayload(): MasconStatus & { standoffMm: number; done: boolean } {
   return { ...masconStatus, standoffMm: masconStandoffMm, done: masconStatus.state === "done" };
-}
-
-function corsJson(data: unknown, status = 200) {
-  return Response.json(data, {
-    status,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    },
-  });
 }
 
 function externalMasconPid(): number | null {
@@ -83,7 +90,8 @@ function externalMasconPid(): number | null {
 
 function isMasconRunning() {
   // Mirror Werner: trust our spawned child first. pgrep-only was wrongly
-  // reporting "not running", which flipped status to「已有完整记录」mid-bake
+  // reporting "not running", which flipped status to "record already complete"
+  // mid-bake
   // whenever a complete (or stale-complete) checkpoint was on disk — and also
   // allowed a second bake to start and truncate the live file.
   if (masconChild) {
@@ -102,7 +110,7 @@ function isMasconRunning() {
 }
 
 
-/** Kill any in-flight mascon bake so「重新计算」actually restarts. */
+/** Kill any in-flight mascon bake so "Recompute" really restarts it. */
 function stopMasconBake() {
   const pids = new Set<number>();
   if (masconChild) {
@@ -149,26 +157,26 @@ function parseMasconProgress(text: string) {
       total > 0 ? Math.min(current >= total ? 99.9 : (100 * current) / total, 99.9) : 0;
     if (current >= total && total > 0) {
       // Leave final 100% / done to applyMasconCheckpoint (finite == total on disk).
-      masconStatus.message = `面片 ${current} / ${total}（写回中）`;
+      masconStatus.message = `Faces ${current} / ${total} (writing back)`;
     } else {
-      masconStatus.message = `面片 ${current} / ${total}`;
+      masconStatus.message = `Faces ${current} / ${total}`;
     }
   } else if (voxel) {
     const vz = Number(voxel[1]);
     const vt = Number(voxel[2]);
     // Prelude only: grid z-slices must NOT drive the main bar to 100% (that was the
-    // "算一半突然跳到 100%" bug — voxelize 128/128 looked like a finished bake).
+    // "jumps to 100% halfway" bug — voxelize 128/128 looked like a finished bake).
     const faceTotal = masconStatus.total > vt ? masconStatus.total : 196608;
     masconStatus.total = faceTotal;
     masconStatus.current = 0;
     masconStatus.percent = vt > 0 ? Math.min(2.5, (2.5 * vz) / vt) : 0;
-    masconStatus.message = `体素化 ${vz} / ${vt}`;
+    masconStatus.message = `Voxelising ${vz} / ${vt}`;
   }
   if (/wrote\s+\d+\s+dense face/.test(text)) {
     // Do NOT set state=done / percent=100 here — the log line can appear while the
     // process is still exiting, and a stale "wrote" must not override an incomplete
     // checkpoint. applyMasconCheckpoint is the sole authority for completion.
-    masconStatus.message = "正在核验完整记录…";
+    masconStatus.message = "Verifying the record...";
   }
 }
 
@@ -228,8 +236,8 @@ function applyMasconCheckpoint() {
     if (running && masconStatus.percent >= 100) masconStatus.percent = 0;
     return;
   }
-  const logSaysFaces = /^面片 /.test(masconStatus.message || "");
-  const logSaysVoxel = /^体素化 /.test(masconStatus.message || "");
+  const logSaysFaces = /^Faces /.test(masconStatus.message || "");
+  const logSaysVoxel = /^Voxelising /.test(masconStatus.message || "");
   if (logSaysVoxel && running) {
     // Keep prelude percent from parseMasconProgress; once faces exist on disk,
     // prefer checkpoint face counts so the bar never sticks at voxel 100%.
@@ -238,7 +246,7 @@ function applyMasconCheckpoint() {
       masconStatus.total = cp.total;
       masconStatus.percent =
         cp.total > 0 ? Math.min(99.9, (100 * cp.current) / cp.total) : 0;
-      masconStatus.message = `面片 ${cp.current} / ${cp.total}`;
+      masconStatus.message = `Faces ${cp.current} / ${cp.total}`;
     }
   } else if (!logSaysFaces && !logSaysVoxel) {
     masconStatus.current = cp.current;
@@ -257,7 +265,7 @@ function applyMasconCheckpoint() {
   }
   if (cp.done && !running) {
     masconStatus.state = "done";
-    masconStatus.message = "烘焙完成（已有完整记录）";
+    masconStatus.message = "Bake complete (record already on disk)";
     masconStatus.percent = 100;
     masconStatus.current = cp.total;
     masconStatus.total = cp.total;
@@ -271,7 +279,7 @@ function applyMasconCheckpoint() {
     }
   } else if (cp.canResume) {
     masconStatus.state = "idle";
-    masconStatus.message = `可继续 · 面片 ${cp.current} / ${cp.total}`;
+    masconStatus.message = `Resumable · faces ${cp.current} / ${cp.total}`;
     masconStatus.current = cp.current;
     masconStatus.total = cp.total;
     masconStatus.percent =
@@ -318,13 +326,13 @@ export function bootMasconStatus() {
     const cp = readMasconCheckpoint();
     if (cp.done) {
       masconStatus.state = "done";
-      masconStatus.message = "烘焙完成（已有完整记录）";
+      masconStatus.message = "Bake complete (record already on disk)";
     } else if (cp.canResume) {
       masconStatus.state = "idle";
-      masconStatus.message = `可继续 · 面片 ${cp.current} / ${cp.total}`;
+      masconStatus.message = `Resumable · faces ${cp.current} / ${cp.total}`;
     } else if (masconStatus.state === "running") {
       masconStatus.state = "idle";
-      masconStatus.message = "未开始";
+      masconStatus.message = "Not started";
     }
   }
 }
@@ -343,7 +351,7 @@ export function masconStatusResponse(): Response {
     const cp = readMasconCheckpoint();
     masconStatus.state = cp.done ? "done" : "idle";
     if (cp.canResume) {
-      masconStatus.message = `可继续 · 面片 ${cp.current} / ${cp.total}`;
+      masconStatus.message = `Resumable · faces ${cp.current} / ${cp.total}`;
     }
   }
   return corsJson(masconPayload());
@@ -360,7 +368,7 @@ export async function startMasconBake(
     const cp = readMasconCheckpoint();
     masconStatus.state = cp.done ? "done" : "idle";
     if (cp.canResume) {
-      masconStatus.message = `可继续 · 面片 ${cp.current} / ${cp.total}`;
+      masconStatus.message = `Resumable · faces ${cp.current} / ${cp.total}`;
     }
   }
   if (isMasconRunning()) {
@@ -368,7 +376,8 @@ export async function startMasconBake(
       applyMasconCheckpoint();
       return corsJson({ ok: true, ...masconPayload(), alreadyRunning: true });
     }
-    // 重新计算：先杀掉旧进程，再清记录重开（否则 UI 会卡在旧进度再突然 100%）
+    // Recompute: kill the old process first, then clear and restart. Otherwise
+    // the UI sticks on stale progress and then jumps to 100%.
     stopMasconBake();
   }
   if (!existsSync(MASCON_BIN)) {
@@ -377,8 +386,8 @@ export async function startMasconBake(
       current: 0,
       total: 0,
       percent: 0,
-      message: "Mascon 烘焙程序缺失",
-      error: `缺少 ${MASCON_BIN}，请先 bun run bakes:build`,
+      message: "Mascon bake program missing",
+      error: `missing ${MASCON_BIN}; run \`bun run bakes:build\` first`,
       canResume: false,
     };
     return corsJson(masconPayload(), 500);
@@ -389,8 +398,8 @@ export async function startMasconBake(
       current: 0,
       total: 0,
       percent: 0,
-      message: "网格缺失",
-      error: `缺少 OBJ: ${MASCON_OBJ}`,
+      message: "Mesh missing",
+      error: `missing OBJ: ${MASCON_OBJ}`,
       canResume: false,
     };
     return corsJson(masconPayload(), 500);
@@ -401,8 +410,8 @@ export async function startMasconBake(
       current: 0,
       total: 0,
       percent: 0,
-      message: "密度 TOML 缺失",
-      error: `缺少 ${MASCON_DENSITY}`,
+      message: "Density TOML missing",
+      error: `missing ${MASCON_DENSITY}`,
       canResume: false,
     };
     return corsJson(masconPayload(), 500);
@@ -425,8 +434,8 @@ export async function startMasconBake(
         current: cp.current,
         total: cp.total,
         percent: 0,
-        message: "没有可恢复的记录",
-        error: "请先点「重新计算」，或确认 assets/records/mascon_faces.bin 未损坏",
+        message: "No resumable record",
+        error: 'press "Recompute" first, or check assets/records/mascon_faces.bin',
         canResume: false,
       };
       return corsJson(masconPayload(), 400);
@@ -437,7 +446,7 @@ export async function startMasconBake(
         current: cp.current,
         total: cp.total,
         percent: 100,
-        message: "记录已完整，无需继续",
+        message: "Record already complete",
         error: "",
         canResume: false,
       };
@@ -462,8 +471,8 @@ export async function startMasconBake(
           : 0,
     message:
       mode === "resume"
-        ? `继续 Mascon 体素暴力烘焙… · 观测面 ${usedStandoffMm} mm`
-        : `启动 Mascon 体素暴力烘焙… · 观测面 ${usedStandoffMm} mm`,
+        ? `Resuming mascon voxel direct sum · standoff ${usedStandoffMm} mm`
+        : `Starting mascon voxel direct sum · standoff ${usedStandoffMm} mm`,
     error: "",
     canResume: false,
   };
@@ -535,28 +544,28 @@ export async function startMasconBake(
         masconStatus.percent = 100;
         masconStatus.current = cpDone.total;
         masconStatus.total = cpDone.total;
-        masconStatus.message = "烘焙完成，记录已保存";
+        masconStatus.message = "Bake complete, record saved";
         masconStatus.error = "";
         masconStatus.canResume = false;
       } else {
         applyMasconCheckpoint();
         masconStatus.state = cpDone.canResume ? "idle" : "error";
         masconStatus.message = cpDone.canResume
-          ? `可继续 · 面片 ${cpDone.current} / ${cpDone.total}`
-          : "烘焙结束但记录不完整";
+          ? `Resumable · faces ${cpDone.current} / ${cpDone.total}`
+          : "Bake ended with an incomplete record";
         masconStatus.error = cpDone.canResume ? "" : "exit 0 but incomplete checkpoint";
       }
     } else if (masconStatus.state === "running") {
       applyMasconCheckpoint();
       masconStatus.state = "error";
-      masconStatus.message = masconStatus.canResume ? "烘焙中断（可继续）" : "烘焙失败";
+      masconStatus.message = masconStatus.canResume ? "Bake interrupted (resumable)" : "Bake failed";
       masconStatus.error = `exit ${code}`;
     }
   })().catch((e) => {
     masconChild = null;
     applyMasconCheckpoint();
     masconStatus.state = "error";
-    masconStatus.message = masconStatus.canResume ? "烘焙异常（可继续）" : "烘焙异常";
+    masconStatus.message = masconStatus.canResume ? "Bake aborted (resumable)" : "Bake aborted";
     masconStatus.error = String(e);
   });
 

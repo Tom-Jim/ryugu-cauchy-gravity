@@ -1,6 +1,6 @@
 //! Spherical quadrature for the direction integral `∫ T(u) S(u) dΩ`.
 //!
-//! The derivation (工程实现 3. 球面求积方向) only requires `Σω = 4π` and a
+//! The derivation only requires `Σω = 4π` and a
 //! centre-symmetric node set (`(u, ω), (−u, ω)`), because `Σω T(u) = 0` is what
 //! cancels the `log(standoff)` divergence. A product rule — Gauss–Legendre in
 //! `cos θ` times a uniform azimuth — satisfies both exactly and, unlike the
@@ -75,7 +75,10 @@ mod tests {
     fn weights_sum_to_four_pi() {
         for n in [2usize, 6, 12, 20] {
             let s: f64 = product_rule(n).iter().map(|(_, w)| w).sum();
-            assert!((s - 4.0 * std::f64::consts::PI).abs() < 1e-12, "n={n} sum={s}");
+            assert!(
+                (s - 4.0 * std::f64::consts::PI).abs() < 1e-12,
+                "n={n} sum={s}"
+            );
         }
     }
 
