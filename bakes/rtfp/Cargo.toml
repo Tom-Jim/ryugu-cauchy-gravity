@@ -9,7 +9,7 @@ readme = "../../README.md"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-wgpu = "29"
+wgpu = "30"
 
 [features]
 default = []

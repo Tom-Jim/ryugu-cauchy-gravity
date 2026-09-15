@@ -1,5 +1,40 @@
 # ryugu-cauchy-gravity
 
+<p align="center">
+  <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-000000?style=flat-square&logo=rust&logoColor=white"></a>
+  <a href="https://bevy.org/"><img alt="Bevy 0.19" src="https://img.shields.io/badge/Bevy-0.19-74c0fc?style=flat-square"></a>
+  <a href="https://bun.sh/"><img alt="Bun" src="https://img.shields.io/badge/Bun-runtime-fbf0df?style=flat-square&logo=bun&logoColor=black"></a>
+  <a href="https://www.w3.org/TR/webgpu/"><img alt="WebGPU" src="https://img.shields.io/badge/WebGPU-native%20%2B%20WASM-005a9c?style=flat-square"></a>
+  <a href="https://www.w3.org/TR/WGSL/"><img alt="WGSL" src="https://img.shields.io/badge/shader-WGSL-0f766e?style=flat-square"></a>
+  <a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-server-3178c6?style=flat-square&logo=typescript&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://tom-jim.github.io/ryugu-cauchy-gravity/"><img alt="Open the interactive WebGPU demo" src="https://img.shields.io/badge/OPEN_THE_INTERACTIVE_WEBGPU_DEMO-0f766e?style=for-the-badge"></a><br>
+  <sub>Explore all four solvers, switch density models, and inspect the 1 mm failure mode in the browser.</sub>
+</p>
+
+## Preview
+
+All four solvers render the same record format through the same colour window,
+at the same observation height, so the images below are directly comparable.
+
+| **Carlson · Cauchy · 16 m** | **RT-FP · Cauchy · 16 m** |
+| :---: | :---: |
+| [![Carlson, Cauchy density, 16 m](docs/images/carlson-cauchy-16m.png)](docs/images/carlson-cauchy-16m.png) | [![RT-FP, Cauchy density, 16 m](docs/images/rtfp-cauchy-16m.png)](docs/images/rtfp-cauchy-16m.png) |
+| **Mascon · Cauchy · 16 m** | **Werner · uniform · 16 m** |
+| [![Mascon, Cauchy density, 16 m](docs/images/mascon-cauchy-16m.png)](docs/images/mascon-cauchy-16m.png) | [![Werner, uniform density, 16 m](docs/images/werner-uniform-16m.png)](docs/images/werner-uniform-16m.png) |
+
+At 16 m, Carlson and RT-FP retain the same smooth density structure, while
+Mascon shows visible cell-scale shading. Werner is the uniform-density reference
+that both exact solvers reproduce to `4 × 10⁻⁷`.
+
+| **Carlson · Cauchy · 1 mm** | **RT-FP · Cauchy · 1 mm** |
+| :---: | :---: |
+| [![Carlson, Cauchy density, 1 mm](docs/images/carlson-cauchy-1mm.png)](docs/images/carlson-cauchy-1mm.png) | [![RT-FP, Cauchy density, 1 mm](docs/images/rtfp-cauchy-1mm.png)](docs/images/rtfp-cauchy-1mm.png) |
+| **Mascon · Cauchy · 1 mm** | **Mascon failure mode** |
+| [![Mascon, Cauchy density, 1 mm](docs/images/mascon-cauchy-1mm.png)](docs/images/mascon-cauchy-1mm.png) | At 1 mm the voxel record dissolves into per-cell speckle. This is a solver limitation at a standoff far below the cell size, not a rendering artefact. |
+
 Four independent solvers for the **gravity-gradient tensor** (the Hessian of the
 gravitational potential) of a body with a **non-uniform interior**, compared on
 one shape model of asteroid (162173) Ryugu.
@@ -207,45 +242,6 @@ void is expressed directly as jump surfaces rather than smeared onto a grid.
 | Deep-space / far-field work over a long arc | **Spherical harmonics** — cheapest and standard, and the near-surface regime is far away by construction |
 | Tesseroids and prisms | Standard for layered or gridded regional models where the density is constant per element; they inherit the voxel trade-off between element size and standoff |
 
-## Screenshots
-
-All four pages render the same record format through the same colour window, at
-the same observation height, so the images are directly comparable.
-
-Carlson on the varying (Cauchy) field, 16 m. The panel reports its residual
-against the same-density reference and against the uniform-density one:
-
-![Carlson, Cauchy density, 16 m](docs/images/carlson-cauchy-16m.png)
-
-RT-FP on the same field and the same surface:
-
-![RT-FP, Cauchy density, 16 m](docs/images/rtfp-cauchy-16m.png)
-
-Mascon on the same field: the voxel structure is visible in the shading, and the
-record's own maximum is 18× the exact solvers' — a single face where the cell
-approximation dominates:
-
-![Mascon, Cauchy density, 16 m](docs/images/mascon-cauchy-16m.png)
-
-Werner, uniform density, 16 m — the reference both exact solvers reproduce to
-4 × 10⁻⁷:
-
-![Werner, uniform density, 16 m](docs/images/werner-uniform-16m.png)
-
-The same field and mesh one millimetre above the terrain. Carlson's panel
-reports the residuals directly, and the uniform-density reference is flagged as a
-height mismatch because that record is still baked at 16 m.
-
-![Carlson, Cauchy density, 1 mm](docs/images/carlson-cauchy-1mm.png)
-
-![RT-FP, Cauchy density, 1 mm](docs/images/rtfp-cauchy-1mm.png)
-
-Mascon at the same surface: the colour window has to switch to `asinh`, the
-`std/mean` of the record jumps, and the body dissolves into per-cell speckle.
-This is the failure mode, not a rendering artefact.
-
-![Mascon, Cauchy density, 1 mm](docs/images/mascon-cauchy-1mm.png)
-
 ## Running it
 
 ```sh
@@ -255,6 +251,14 @@ bun run dev            # build the WASM viewer, serve on http://127.0.0.1:3000
 
 The viewer needs a browser with WebGPU and cross-origin isolation (both are
 served by the development server).
+
+The hosted static build is available at
+[tom-jim.github.io/ryugu-cauchy-gravity](https://tom-jim.github.io/ryugu-cauchy-gravity/).
+It is generated by `bun run pages:build`: `wasm-pack` writes the browser package
+to `pkg/`, then `scripts/stage-pages.mjs` copies only the required runtime files
+to the generated `dist/` directory. On pushes to `main`, GitHub Actions uploads
+`dist/` as the Pages artifact and deploys it through the `github-pages`
+environment. Neither `pkg/` nor `dist/` is committed to the repository.
 
 Four algorithm tabs, one per solver, each with the same two-segment vertical
 observation-height slider: 1 mm → 500 mm over the lower half of the track and
@@ -315,6 +319,8 @@ bun run typecheck                          # server and tools
 bakes/rtfp/          Rust bake host: RT-FP and Carlson solvers, WGSL kernels
 bakes/mascon/        mascon voxel direct sum (C++)
 bakes/werner/        polyhedral closed form over the ESA reference library (C++)
+pkg/                 generated wasm-pack browser package (not committed)
+dist/                generated GitHub Pages static site (not committed)
 src/server/          Bun development server, one endpoint per solver
 src/viewer/          Bevy + WebGPU viewer (Rust, compiled to WASM)
 src/web/             single-page control surface

@@ -70,6 +70,7 @@ impl Device {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         }))
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
@@ -569,7 +570,11 @@ impl Scene {
                 Err(e) => return Err(format!("readback channel: {e}")),
             }
         }
-        let mapped = self.readback.slice(..bytes as u64).get_mapped_range();
+        let mapped = self
+            .readback
+            .slice(..bytes as u64)
+            .get_mapped_range()
+            .map_err(|e| format!("readback map range: {e}"))?;
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             out.push(f32::from_le_bytes(

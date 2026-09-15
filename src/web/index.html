@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="ryugu-mode" content="dynamic" />
   <link rel="icon" href="data:," />
   <title>Ryugu · gravity-gradient face records</title>
   <style>
@@ -83,6 +84,9 @@
     <div id="compare" hidden></div>
   </div>
   <script type="module">
+    const STATIC_DEMO =
+      document.querySelector('meta[name="ryugu-mode"]')?.content === "static";
+
     // ---------------------------------------------------------------------
     // Element handles
     // ---------------------------------------------------------------------
@@ -225,7 +229,7 @@
         short: "Werner · uniform density",
         title: "Werner · uniform density · analytic polyhedral gradient",
         api: "/api/werner",
-        asset: "/assets/records/gradient_faces.bin",
+        asset: "assets/records/gradient_faces.bin",
         density: false,
         compare: false,
         next: "Switch to Mascon (voxel)",
@@ -235,7 +239,7 @@
         short: "Mascon · voxel direct sum",
         title: "Mascon · 5.2 m voxel direct sum · Cauchy density",
         api: "/api/mascon",
-        asset: "/assets/records/mascon_faces.bin",
+        asset: "assets/records/mascon_faces.bin",
         density: false,
         compare: false,
         next: "Switch to RT-FP",
@@ -247,8 +251,8 @@
         title: "RT-FP · Cauchy vein density · analytic near field + GPU quadrature",
         titleConstant: "RT-FP · uniform density ρ₀ · analytic near field only",
         api: "/api/rtfp",
-        assetCauchy: "/assets/records/rtfp_faces.bin",
-        assetConstant: "/assets/records/rtfp_constant_faces.bin",
+        assetCauchy: "assets/records/rtfp_faces.bin",
+        assetConstant: "assets/records/rtfp_constant_faces.bin",
         density: true,
         compare: true,
         next: "Switch to Carlson",
@@ -260,8 +264,8 @@
         title: "Carlson · Cauchy vein density · jump-surface surface integral",
         titleConstant: "Carlson · uniform density · jump-surface surface integral",
         api: "/api/carlson",
-        assetCauchy: "/assets/records/carlson_cauchy_faces.bin",
-        assetConstant: "/assets/records/carlson_constant_faces.bin",
+        assetCauchy: "assets/records/carlson_cauchy_faces.bin",
+        assetConstant: "assets/records/carlson_constant_faces.bin",
         density: true,
         compare: true,
         next: "Switch to Werner",
@@ -301,6 +305,14 @@
     algoLabel.textContent = cfg.short;
     algoBtn.textContent = cfg.next;
     algoBtn.addEventListener("click", switchAlgo);
+    let wasmViewer = null;
+
+    if (STATIC_DEMO) {
+      bakeBtn.hidden = true;
+      resumeBtn.hidden = true;
+      standoffRange.disabled = true;
+      standoffRange.title = "The hosted demo uses precomputed records";
+    }
 
     const show = (t) => {
       console.error(t);
@@ -348,10 +360,15 @@
       }
       statusEl.textContent = line;
       const running = s.state === "running";
-      bakeBtn.disabled = running;
-      bakeBtn.textContent = running ? "Computing…" : "Recompute";
-      resumeBtn.hidden = !(s.canResume && !running);
-      resumeBtn.disabled = running || !s.canResume;
+      if (STATIC_DEMO) {
+        bakeBtn.hidden = true;
+        resumeBtn.hidden = true;
+      } else {
+        bakeBtn.disabled = running;
+        bakeBtn.textContent = running ? "Computing…" : "Recompute";
+        resumeBtn.hidden = !(s.canResume && !running);
+        resumeBtn.disabled = running || !s.canResume;
+      }
       reloadBtn.hidden = s.state !== "done";
       if (isDensitySelectable) {
         // The density model lives on the server (it selects the kernel set), so
@@ -475,13 +492,13 @@
       werner: {
         name: "Werner",
         kind: "uniform density",
-        asset: "/assets/records/gradient_faces.bin",
+        asset: "assets/records/gradient_faces.bin",
         api: "/api/werner/status",
       },
       mascon: {
         name: "Mascon",
         kind: "Cauchy density",
-        asset: "/assets/records/mascon_faces.bin",
+        asset: "assets/records/mascon_faces.bin",
         api: "/api/mascon/status",
       },
     };
@@ -566,10 +583,21 @@
         // Memoise on everything the two lines depend on: the density model, the
         // active record, and both reference records.
         const refKeys = Object.keys(COMPARE_REFS);
-        const refStatuses = await Promise.all(
-          refKeys.map(async (k) =>
-            (await (await fetch(COMPARE_REFS[k].api, { cache: "no-store" })).json())),
-        );
+        const refStatuses = await Promise.all(refKeys.map(async (k) => {
+          if (!STATIC_DEMO) {
+            return (await (await fetch(COMPARE_REFS[k].api, { cache: "no-store" })).json());
+          }
+          const res = await fetch(COMPARE_REFS[k].asset, { cache: "no-store" });
+          if (!res.ok) throw new Error(`failed to read ${COMPARE_REFS[k].name} reference`);
+          const parsed = parseFaceScalars(await res.arrayBuffer());
+          if (!parsed) throw new Error(`invalid ${COMPARE_REFS[k].name} reference`);
+          return {
+            state: "done",
+            current: parsed.total,
+            total: parsed.total,
+            standoffMm: parsed.standoffMm,
+          };
+        }));
         const refSts = Object.fromEntries(refKeys.map((k, i) => [k, refStatuses[i]]));
         const mineKey = `${status.current ?? ""}/${status.total ?? ""}@${status.standoffMm ?? ""}`;
         const refKey = refStatuses
@@ -596,6 +624,13 @@
     // Controls
     // ---------------------------------------------------------------------
     async function startBake(mode) {
+      if (STATIC_DEMO) {
+        statusEl.textContent = "Loading the precomputed record…";
+        compareKey = "";
+        if (wasmViewer) await pullBakeIntoWasm(wasmViewer);
+        await pollStatus();
+        return;
+      }
       bakeBtn.disabled = true;
       resumeBtn.disabled = true;
       statusEl.textContent = mode === "resume"
@@ -620,6 +655,7 @@
 
     /** Apply a new observation height to whichever algorithm is on screen. */
     function applyStandoff(mm) {
+      if (STATIC_DEMO) return;
       setStandoffUi(mm);
       // Whatever is on disk now belongs to the previous height.
       setStandoffRecordLabel(Number.NaN);
@@ -636,9 +672,28 @@
       applyStandoff(standoffMm);
     });
 
+    async function staticStatus() {
+      const res = await fetch(`${recordAsset()}?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`record read failed (${res.status})`);
+      const parsed = parseFaceScalars(await res.arrayBuffer());
+      if (!parsed) throw new Error("invalid RHGF v5 record");
+      return {
+        state: "done",
+        done: true,
+        message: `Static demo · precomputed ${fmtMm(parsed.standoffMm)} record`,
+        percent: 100,
+        current: parsed.total,
+        total: parsed.total,
+        standoffMm: parsed.standoffMm,
+        densityMode,
+      };
+    }
+
     async function pollStatus() {
       try {
-        const s = await (await fetch(`${bakeApi}/status`, { cache: "no-store" })).json();
+        const s = STATIC_DEMO
+          ? await staticStatus()
+          : await (await fetch(`${bakeApi}/status`, { cache: "no-store" })).json();
         renderStatus(s);
         return s;
       } catch (e) {
@@ -672,7 +727,7 @@
     });
 
     applyAlgoLabels();
-    setInterval(pollStatus, 1000);
+    if (!STATIC_DEMO) setInterval(pollStatus, 1000);
     await pollStatus();
 
     if (!navigator.gpu) {
@@ -694,8 +749,9 @@
           ) {
             setStandoffUi(urlStandoff);
           }
-          const wasm = await import("/pkg/ryugu_cauchy_gravity.js");
-          await wasm.default({ module_or_path: "/pkg/ryugu_cauchy_gravity_bg.wasm" });
+          const wasm = await import("./pkg/ryugu_cauchy_gravity.js");
+          await wasm.default({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
+          wasmViewer = wasm;
           let bakeBytes = new Uint8Array(28);
           try {
             const bakeRes = await fetch(recordAsset(), { cache: "no-store" });
@@ -704,7 +760,7 @@
             /* start gray; the bake may create the file */
           }
           wasm.run_with_bake(bakeBytes);
-          setInterval(() => pullBakeIntoWasm(wasm), 500);
+          if (!STATIC_DEMO) setInterval(() => pullBakeIntoWasm(wasm), 500);
         }
       } catch (e) {
         show(String(e?.stack || e));

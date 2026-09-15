@@ -111,13 +111,18 @@ jobs:
           exit 1
 
   # ---------------------------------------------------------------------------
-  # Bundle: a push to the default branch also produces the deployable WASM
-  # package, so a release never depends on a developer's machine.
+  # Pages: build the WASM package, stage only the browser files into dist/, and
+  # publish that directory with the GitHub Actions Pages deployment flow.
   # ---------------------------------------------------------------------------
   bundle:
-    name: WASM bundle
-    if: github.event_name == 'push'
+    name: Static site bundle
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: [bake-core, viewer, web]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -135,11 +140,28 @@ jobs:
         with:
           tool: wasm-pack
 
-      - name: Build the viewer package
-        run: bun run build
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
 
-      - uses: actions/upload-artifact@v4
+      - name: Build the static site
+        run: bun run pages:build
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: ryugu-cauchy-gravity-wasm
-          path: pkg/
-          if-no-files-found: error
+          path: dist/
+
+  pages:
+    name: GitHub Pages
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

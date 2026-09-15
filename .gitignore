@@ -3,6 +3,7 @@
 # ---------------------------------------------------------------------------
 /target/
 /pkg/
+/dist/
 bakes/rtfp/target/
 bakes/esa-build/
 bakes/build/

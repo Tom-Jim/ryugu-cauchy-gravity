@@ -18,6 +18,8 @@
     "serve": "bun src/server/server.ts",
     "build": "bun scripts/build.mjs --release",
     "build:dev": "bun scripts/build.mjs --dev",
+    "pages:build": "bun run build && bun run pages:stage",
+    "pages:stage": "bun scripts/stage-pages.mjs",
     "typecheck": "tsc --noEmit",
     "fmt": "cargo fmt --all && cargo fmt --all --manifest-path bakes/rtfp/Cargo.toml",
     "fmt:check": "cargo fmt --all --check && cargo fmt --all --check --manifest-path bakes/rtfp/Cargo.toml",
