@@ -193,7 +193,7 @@ function readMasconCheckpoint(): {
     return { ok: false, current: 0, total: 0, done: false, canResume: false, standoffMm: 0 };
   }
   try {
-    const buf = Buffer.from(readFileSync(MASCON_OUT));
+    const buf = readFileSync(MASCON_OUT);
     if (buf.byteLength < 28) {
       return { ok: false, current: 0, total: 0, done: false, canResume: false, standoffMm: 0 };
     }

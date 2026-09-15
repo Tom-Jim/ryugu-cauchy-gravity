@@ -90,7 +90,7 @@ export function corsJson(data: unknown, status = 200) {
 
 function readFileOrNull(path: string): Buffer | null {
   try {
-    return existsSync(path) ? Buffer.from(readFileSync(path)) : null;
+    return existsSync(path) ? readFileSync(path) : null;
   } catch {
     return null;
   }

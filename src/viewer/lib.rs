@@ -19,7 +19,7 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use gradient::{
     BakePaint, DisplayWindow, colormap_scalar, display_window_for, explode_mesh_for_flat_faces,
-    init_gray_colors, paint_face_on_colors, parse_bake, push_bake_bytes, take_pending_bake,
+    init_gray_colors, paint_face_on_colors, push_bake_bytes, take_pending_bake,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -46,13 +46,13 @@ struct Clock(f64);
 pub fn run_with_bake(bytes: &[u8]) {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
-    push_bake_bytes(bytes.to_vec());
+    push_bake_bytes(bytes);
     run_app();
 }
 
 #[wasm_bindgen]
 pub fn push_bake_update(bytes: &[u8]) {
-    push_bake_bytes(bytes.to_vec());
+    push_bake_bytes(bytes);
 }
 
 fn run_app() {
@@ -216,25 +216,32 @@ fn prepare_paint_target(
 }
 
 fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
-    let Some(bytes) = take_pending_bake() else {
+    let Some(baked) = take_pending_bake() else {
         return;
     };
-    let Ok(baked) = parse_bake(&bytes) else {
+    let Ok(face_scalar) = baked else {
         return;
     };
-    if paint.painted.len() != baked.face_scalar.len() {
-        paint.painted = vec![false; baked.face_scalar.len()];
-        paint.scalars = vec![f32::NAN; baked.face_scalar.len()];
+    if paint.painted.len() != face_scalar.len() {
+        paint.painted = vec![false; face_scalar.len()];
+        paint.scalars = vec![f32::NAN; face_scalar.len()];
         paint.queue.clear();
         paint.reset_to_gray = true;
         paint.last_finite = 0;
     }
 
-    let finite_file = baked.face_scalar.iter().filter(|s| s.is_finite()).count();
+    let finite_file = face_scalar.iter().filter(|s| s.is_finite()).count();
     let finite_local = paint.scalars.iter().filter(|s| s.is_finite()).count();
+    let same_snapshot = paint.scalars.len() == face_scalar.len()
+        && paint
+            .scalars
+            .iter()
+            .zip(&face_scalar)
+            .all(|(old, new)| old.to_bits() == new.to_bits());
 
     // Unchanged complete (or unchanged progressive) snapshot — do not re-sort / re-queue.
-    if finite_file == paint.last_finite
+    if same_snapshot
+        && finite_file == paint.last_finite
         && finite_file == finite_local
         && paint.queue.is_empty()
         && !paint.reset_to_gray
@@ -245,7 +252,7 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
     // Bake restart / stub: file went backwards — wipe previous full coloring.
     if finite_file < finite_local {
         paint.painted.fill(false);
-        paint.scalars = vec![f32::NAN; baked.face_scalar.len()];
+        paint.scalars = vec![f32::NAN; face_scalar.len()];
         paint.queue.clear();
         paint.window = DisplayWindow::default();
         paint.reset_to_gray = true;
@@ -253,7 +260,7 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
     }
 
     let mut newly = Vec::new();
-    for (f, &s) in baked.face_scalar.iter().enumerate() {
+    for (f, &s) in face_scalar.iter().enumerate() {
         if s.is_finite() {
             let was = paint.scalars.get(f).copied().unwrap_or(f32::NAN);
             if !paint.painted[f] && !was.is_finite() {
@@ -267,8 +274,11 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
         }
     }
 
-    // Only recompute percentile stretch when the finite set grew (expensive sort).
-    if finite_file != paint.last_finite {
+    // Recompute the percentile stretch whenever the record content changes. Four
+    // completed algorithms can have the same finite count while every scalar
+    // differs, so finite count alone is not a record identity.
+    let full_recolor = !same_snapshot || finite_file != paint.last_finite;
+    if full_recolor {
         // Same window rule as the RT-FP path, derived from the raw face scalars:
         // equal values therefore map to equal colours in every viewer.
         paint.window = display_window_for(&paint.scalars);
@@ -281,7 +291,7 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
     }
     paint.last_finite = finite_file;
 
-    if !newly.is_empty() {
+    if !full_recolor && !newly.is_empty() {
         // Complete file / huge catch-up: skip shuffle so we can dump colors in one frame.
         if newly.len() > 8_000 {
             paint.queue.extend(newly);

@@ -279,27 +279,69 @@
       return saved && ALGOS[saved] ? saved : "werner";
     }
 
-    function switchAlgo() {
-      const i = ALGO_ORDER.indexOf(getAlgo());
-      const next = ALGO_ORDER[(i + 1) % ALGO_ORDER.length];
-      localStorage.setItem(ALGO_KEY, next);
-      const u = new URL(location.href);
-      u.searchParams.set("algo", next);
-      u.searchParams.delete("fresh");
-      location.assign(u.toString());
-    }
-
-    const algo = getAlgo();
+    let algo = getAlgo();
     localStorage.setItem(ALGO_KEY, algo);
-    const cfg = ALGOS[algo];
+    let cfg = ALGOS[algo];
     /** RT-FP and Carlson bake one record per density model; the rest are fixed. */
     let densityMode = "cauchy";
-    const isDensitySelectable = cfg.density;
-    const bakeApi = cfg.api;
+    let isDensitySelectable = cfg.density;
+    let bakeApi = cfg.api;
+    /**
+     * Every async read carries the generation it started in. Switching algorithms
+     * must never let a late response from the previous record repaint this one.
+     */
+    let recordGeneration = 0;
+    let algoSwitching = false;
+    let statusAbort = null;
+    let pullAbort = null;
+    let pullGeneration = -1;
+    let statsGeneration = -1;
+    let lastPulledKey = "";
     const recordAsset = () =>
       (isDensitySelectable
         ? (densityMode === "constant" ? cfg.assetConstant : cfg.assetCauchy)
         : cfg.asset);
+
+    async function selectAlgorithm(next) {
+      if (!ALGOS[next] || next === algo || algoSwitching) return;
+
+      algoSwitching = true;
+      algoBtn.disabled = true;
+      recordGeneration++;
+      try {
+        algo = next;
+        cfg = ALGOS[next];
+        isDensitySelectable = cfg.density;
+        bakeApi = cfg.api;
+        densityMode = "cauchy";
+        compareKey = "";
+        window.__bakeScalarStats = null;
+        compareEl.hidden = !cfg.compare;
+        compareEl.textContent = "";
+
+        localStorage.setItem(ALGO_KEY, algo);
+        const u = new URL(location.href);
+        u.searchParams.set("algo", algo);
+        u.searchParams.delete("fresh");
+        // Keep one browser-history entry: Back leaves the viewer instead of
+        // restoring the previous algorithm and creating another WebGPU context.
+        history.replaceState(null, "", u.toString());
+
+        applyAlgoLabels();
+        statusEl.textContent = `Loading ${cfg.name}…`;
+
+        await pollStatus();
+      } finally {
+        algoSwitching = false;
+        algoBtn.disabled = false;
+      }
+    }
+
+    function switchAlgo() {
+      const i = ALGO_ORDER.indexOf(algo);
+      const next = ALGO_ORDER[(i + 1) % ALGO_ORDER.length];
+      void selectAlgorithm(next);
+    }
 
     setStandoffUi(STANDOFF_DEFAULT_MM);
     algoLabel.textContent = cfg.short;
@@ -378,37 +420,41 @@
         densBtn.disabled = running;
         updateAlgorithmCompare(s);
       }
-      if (s.state === "done") {
-        if (!window.__bakeScalarStats) refreshBakeScalarStats();
-      } else {
-        window.__bakeScalarStats = null;
-      }
+      if (s.state !== "done") window.__bakeScalarStats = null;
     }
 
     /** Colour-window statistics, so the panel explains what the renderer chose. */
-    async function refreshBakeScalarStats() {
+    async function refreshBakeScalarStats(buffer) {
+      const generation = recordGeneration;
+      if (statsGeneration === generation) return;
+      statsGeneration = generation;
       try {
-        const res = await fetch(`${recordAsset()}?t=${Date.now()}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const parsed = parseFaceScalars(await res.arrayBuffer());
+        const parsed = parseFaceScalars(buffer);
         if (!parsed) return;
-        const vals = [];
+        if (generation !== recordGeneration) return;
+        // Keep the 196k samples in a packed float buffer; a JS Number[] here
+        // costs several megabytes per analysis and creates avoidable GC spikes.
+        const vals = new Float32Array(parsed.total);
+        let count = 0;
         for (let i = 0; i < parsed.total; i++) {
           const v = parsed.scalars[i];
-          if (Number.isFinite(v)) vals.push(v);
+          if (Number.isFinite(v)) vals[count++] = v;
         }
-        if (!vals.length) return;
-        vals.sort((a, b) => a - b);
-        const n = vals.length;
-        const min = vals[0];
-        const max = vals[n - 1];
-        const mean = vals.reduce((a, b) => a + b, 0) / n;
+        if (count === 0) return;
+        const sorted = vals.subarray(0, count);
+        sorted.sort();
+        const n = sorted.length;
+        const min = sorted[0];
+        const max = sorted[n - 1];
+        let sum = 0;
+        for (let i = 0; i < n; i++) sum += sorted[i];
+        const mean = sum / n;
         let varsum = 0;
-        for (const v of vals) varsum += (v - mean) * (v - mean);
+        for (let i = 0; i < n; i++) varsum += (sorted[i] - mean) * (sorted[i] - mean);
         const std = Math.sqrt(varsum / n);
-        const lo = vals[Math.round((n - 1) * 0.02)];
-        const med = vals[Math.round((n - 1) * 0.5)];
-        const hi = vals[Math.round((n - 1) * 0.98)];
+        const lo = sorted[Math.round((n - 1) * 0.02)];
+        const med = sorted[Math.round((n - 1) * 0.5)];
+        const hi = sorted[Math.round((n - 1) * 0.98)];
         // Same rule as the renderer (all algorithms share one colour window):
         // asinh only when the median face would sit in the bottom eighth of a
         // linear ramp — i.e. when the body would collapse onto one colour.
@@ -427,7 +473,9 @@
           mode: heavy ? "asinh" : "linear",
         };
       } catch {
-        /* transient read while the writer truncates the record */
+        /* ignore a malformed or partial record */
+      } finally {
+        if (statsGeneration === generation) statsGeneration = -1;
       }
     }
 
@@ -460,23 +508,29 @@
     function scalarDiffStats(a, b, relEps = 0.05) {
       const n = Math.min(a.total, b.total);
       if (n === 0) return null;
-      const rels = [];
+      const rels = new Float32Array(n);
+      let count = 0;
       for (let i = 0; i < n; i++) {
         const sa = a.scalars[i];
         const sb = b.scalars[i];
         if (!Number.isFinite(sa) || !Number.isFinite(sb)) continue;
-        rels.push(Math.abs(sa - sb) / Math.max(Math.abs(sa), Math.abs(sb), 1e-300));
+        rels[count++] = Math.abs(sa - sb) / Math.max(Math.abs(sa), Math.abs(sb), 1e-300);
       }
-      if (rels.length === 0) return null;
-      rels.sort((x, y) => x - y);
-      const at = (q) => rels[Math.min(rels.length - 1, Math.round((rels.length - 1) * q))];
+      if (count === 0) return null;
+      const sorted = rels.subarray(0, count);
+      sorted.sort();
+      const at = (q) => sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * q))];
+      let over = 0;
+      for (let i = 0; i < sorted.length; i++) {
+        if (sorted[i] > relEps) over++;
+      }
       return {
-        compared: rels.length,
+        compared: sorted.length,
         total: n,
         relEps,
-        over: rels.filter((r) => r > relEps).length,
+        over,
         med: at(0.5),
-        max: rels[rels.length - 1],
+        max: sorted[sorted.length - 1],
       };
     }
 
@@ -565,6 +619,7 @@
 
     async function updateAlgorithmCompare(status) {
       if (!cfg.compare || !compareEl) return;
+      const generation = recordGeneration;
       const mode = status?.densityMode === "constant" ? "constant" : "cauchy";
       const mineTag = mode === "constant"
         ? `${cfg.name} uniform density`
@@ -599,6 +654,7 @@
           };
         }));
         const refSts = Object.fromEntries(refKeys.map((k, i) => [k, refStatuses[i]]));
+        if (generation !== recordGeneration) return;
         const mineKey = `${status.current ?? ""}/${status.total ?? ""}@${status.standoffMm ?? ""}`;
         const refKey = refStatuses
           .map((s) => `${s.state}:${s.current}/${s.total}@${s.standoffMm}`)
@@ -610,8 +666,10 @@
         const order = [PRIMARY_REF[mode], mode === "cauchy" ? "werner" : "mascon"];
         const lines = [];
         for (const k of order) lines.push(await compareAgainst(COMPARE_REFS[k], refSts[k], mineTag));
+        if (generation !== recordGeneration) return;
         compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
       } catch (e) {
+        if (generation !== recordGeneration) return;
         // Drop the memo so a transient read failure is retried on the next poll.
         compareKey = "";
         compareEl.textContent = `comparison failed: ${e}`;
@@ -624,13 +682,16 @@
     // Controls
     // ---------------------------------------------------------------------
     async function startBake(mode) {
+      const generation = ++recordGeneration;
       if (STATIC_DEMO) {
         statusEl.textContent = "Loading the precomputed record…";
         compareKey = "";
-        if (wasmViewer) await pullBakeIntoWasm(wasmViewer);
+        if (wasmViewer) await pullBakeIntoWasm(wasmViewer, generation);
         await pollStatus();
         return;
       }
+      const api = bakeApi;
+      const density = densityMode;
       bakeBtn.disabled = true;
       resumeBtn.disabled = true;
       statusEl.textContent = mode === "resume"
@@ -639,14 +700,16 @@
       try {
         const body = { mode, standoffMm };
         // RT-FP and Carlson bake one record per density model.
-        if (isDensitySelectable) body.density = densityMode;
-        const s = await (await fetch(`${bakeApi}/start`, {
+        if (isDensitySelectable) body.density = density;
+        const s = await (await fetch(`${api}/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         })).json();
+        if (generation !== recordGeneration) return;
         renderStatus(s);
       } catch (e) {
+        if (generation !== recordGeneration) return;
         statusEl.textContent = `failed to start the bake: ${e}`;
         bakeBtn.disabled = false;
         resumeBtn.disabled = false;
@@ -672,8 +735,11 @@
       applyStandoff(standoffMm);
     });
 
-    async function staticStatus() {
-      const res = await fetch(`${recordAsset()}?t=${Date.now()}`, { cache: "no-store" });
+    async function staticStatus(signal) {
+      const res = await fetch(`${recordAsset()}?t=${Date.now()}`, {
+        cache: "no-store",
+        signal,
+      });
       if (!res.ok) throw new Error(`record read failed (${res.status})`);
       const parsed = parseFaceScalars(await res.arrayBuffer());
       if (!parsed) throw new Error("invalid RHGF v5 record");
@@ -690,34 +756,106 @@
     }
 
     async function pollStatus() {
+      const generation = recordGeneration;
+      const api = bakeApi;
+      if (statusAbort) statusAbort.abort();
+      const controller = new AbortController();
+      statusAbort = controller;
       try {
         const s = STATIC_DEMO
-          ? await staticStatus()
-          : await (await fetch(`${bakeApi}/status`, { cache: "no-store" })).json();
+          ? await staticStatus(controller.signal)
+          : await (await fetch(`${api}/status`, {
+            cache: "no-store",
+            signal: controller.signal,
+          })).json();
+        if (generation !== recordGeneration) return null;
         renderStatus(s);
+        await syncRecordFromStatus(s, generation);
         return s;
       } catch (e) {
+        if (controller.signal.aborted || generation !== recordGeneration) return null;
         statusEl.textContent = `status read failed: ${e}`;
         return null;
+      } finally {
+        if (statusAbort === controller) {
+          statusAbort = null;
+        }
       }
     }
 
-    async function pullBakeIntoWasm(wasm) {
+    function statusRecordKey(s) {
+      if (!s || (!Number(s.total) && !Number(s.current))) return "";
+      return [
+        algo,
+        isDensitySelectable ? densityMode : "",
+        recordAsset(),
+        s.state ?? "",
+        s.current ?? "",
+        s.total ?? "",
+        s.standoffMm ?? "",
+      ].join("|");
+    }
+
+    async function syncRecordFromStatus(s, generation) {
+      if (!wasmViewer || generation !== recordGeneration) return;
+      const key = statusRecordKey(s);
+      if (!key || key === lastPulledKey) return;
+      await pullBakeIntoWasm(wasmViewer, generation, key, s.done === true);
+    }
+
+    async function pullBakeIntoWasm(
+      wasm,
+      generation = recordGeneration,
+      key = "",
+      withStats = false,
+    ) {
+      if (pullAbort && pullGeneration === generation) return;
+      if (pullAbort) pullAbort.abort();
+      const controller = new AbortController();
+      pullAbort = controller;
+      pullGeneration = generation;
+      const asset = recordAsset();
       try {
-        const bakeRes = await fetch(`${recordAsset()}?t=${Date.now()}`, { cache: "no-store" });
+        const bakeRes = await fetch(`${asset}?t=${Date.now()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (!bakeRes.ok) return;
         const bakeBytes = new Uint8Array(await bakeRes.arrayBuffer());
-        if (bakeBytes.byteLength >= 28) wasm.push_bake_update(bakeBytes);
+        if (generation !== recordGeneration) return;
+        if (bakeBytes.byteLength >= 28) {
+          wasm.push_bake_update(bakeBytes);
+          if (key) lastPulledKey = key;
+          if (withStats) await refreshBakeScalarStats(bakeBytes.buffer);
+        }
       } catch {
         /* ignore the transient read while the writer truncates the record */
+      } finally {
+        if (pullAbort === controller) {
+          pullAbort = null;
+          pullGeneration = -1;
+        }
       }
     }
 
     bakeBtn.addEventListener("click", () => startBake("restart"));
     resumeBtn.addEventListener("click", () => startBake("resume"));
-    reloadBtn.addEventListener("click", () => location.reload());
+    reloadBtn.addEventListener("click", async () => {
+      if (!wasmViewer) return;
+      reloadBtn.disabled = true;
+      compareKey = "";
+      window.__bakeScalarStats = null;
+      statusEl.textContent = "Reloading the current record colours…";
+      try {
+        await pullBakeIntoWasm(wasmViewer, recordGeneration, "", true);
+        await pollStatus();
+      } finally {
+        reloadBtn.disabled = false;
+      }
+    });
     densBtn.addEventListener("click", () => {
       densityMode = densityMode === "constant" ? "cauchy" : "constant";
+      recordGeneration++;
       applyAlgoLabels();
       compareKey = "";
       statusEl.textContent = densityMode === "constant"
@@ -727,8 +865,14 @@
     });
 
     applyAlgoLabels();
-    if (!STATIC_DEMO) setInterval(pollStatus, 1000);
-    await pollStatus();
+    if (!STATIC_DEMO) {
+      const pollLoop = async () => {
+        if (!document.hidden) await pollStatus();
+        setTimeout(pollLoop, 1000);
+      };
+      setTimeout(pollLoop, 1000);
+    }
+    const initialStatus = await pollStatus();
 
     if (!navigator.gpu) {
       show("WebGPU is required (navigator.gpu is unavailable in this browser).");
@@ -760,7 +904,8 @@
             /* start gray; the bake may create the file */
           }
           wasm.run_with_bake(bakeBytes);
-          if (!STATIC_DEMO) setInterval(() => pullBakeIntoWasm(wasm), 500);
+          lastPulledKey = statusRecordKey(initialStatus);
+          if (initialStatus?.done) await refreshBakeScalarStats(bakeBytes.buffer);
         }
       } catch (e) {
         show(String(e?.stack || e));

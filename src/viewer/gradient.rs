@@ -44,15 +44,18 @@ pub fn parse_bake(bytes: &[u8]) -> Result<BakedFaces, String> {
     Ok(BakedFaces { face_scalar })
 }
 
-static PENDING_BAKE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+static PENDING_BAKE: Mutex<Option<Result<Vec<f32>, String>>> = Mutex::new(None);
 
-pub fn push_bake_bytes(bytes: Vec<u8>) {
+pub fn push_bake_bytes(bytes: &[u8]) {
+    // Parse at the WASM boundary so only one face-scalar allocation survives
+    // into the next frame; retaining the raw bytes as well doubled the peak.
+    let parsed = parse_bake(bytes).map(|baked| baked.face_scalar);
     if let Ok(mut g) = PENDING_BAKE.lock() {
-        *g = Some(bytes);
+        *g = Some(parsed);
     }
 }
 
-pub fn take_pending_bake() -> Option<Vec<u8>> {
+pub fn take_pending_bake() -> Option<Result<Vec<f32>, String>> {
     PENDING_BAKE.lock().ok().and_then(|mut g| g.take())
 }
 
