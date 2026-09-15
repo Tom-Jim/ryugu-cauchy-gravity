@@ -1,7 +1,7 @@
 # =============================================================================
-# Ryugu density model — an angularly structured interior carrying two true
-# density discontinuities: a narrow core-mantle step and discrete ore bodies and
-# voids. DESIGNED FIELD, not a Hayabusa2 inversion product.
+# Ryugu density model — an angularly structured interior carrying two classes of
+# true density discontinuity: a narrow core-mantle step, and discrete ore bodies
+# and voids. DESIGNED FIELD, not a Hayabusa2 inversion product.
 # =============================================================================
 # rho(y) = sum_k w_k * [1 + sigma_k^2 ||y - c_k||^2]^(-alpha_k),  alpha_k = 1
 # Lengths km, weights kg/m^3. The field is analytic, so a solver can either
@@ -19,40 +19,53 @@
 #     decomposition, evaluated as a pure surface integral,
 #   * mascon — the same density sampled onto a 192^3 grid of point masses.
 #
-# The design rule is the one the four algorithms disagree about. Carlson writes
-# the cone from the volume centroid to each mesh face and resolves the density
-# along that cone's *axis*, so angular structure costs it nothing (a cone spans
-# one mesh face, ~2 m at the surface) while radial structure costs slabs, and the
-# slab budget is finite. RT-FP integrates the radial direction in closed form and
-# only quadratures the remaining direction integral with 288 fixed directions,
-# so radial structure costs it nothing while angular structure must stay smooth
-# on the ~0.2 rad scale of that quadrature. A field that is fair to both, and
-# adversarial to a voxel grid, therefore has to put almost all of its variation
-# in *direction*:
+# The design rule is the one the four algorithms disagree about. Carlson resolves
+# the density along each cone *axis*, so structure that varies with direction
+# costs it nothing (one cone spans one mesh face, ~2 m at the surface) while
+# structure that varies with radius costs slabs, and the slab budget is finite.
+# RT-FP integrates the radial direction in closed form and quadratures only the
+# remaining direction integral, with 288 fixed directions, so radial structure
+# costs it nothing while angular structure has to stay smooth on the ~0.2 rad
+# scale of that quadrature. A field that is fair to both, and adversarial to a
+# voxel grid, therefore puts most of its variation in *direction*:
 #
 #   1. L0-L1 — a nearly uniform matrix, plus the hub compensation that keeps the
-#      sum of the belt lanes from piling up on the axis. The radial profile stays
-#      within ~15 % of the bulk density, so a cone axis is nearly isopycnic.
+#      sum of the belt lanes from piling up on the axis.
 #   2. L2 — the primary feature: a 12-fold equatorial ore belt of three radial
 #      lanes, sigma = 10 km^-1 (a ~100 m kernel). Coarse enough for the 288
 #      direction quadrature, 12-fold in longitude so the mesh resolves it.
 #   3. L3-L5 — a regolith deficit above the belt, polar deficits and a
 #      mid-latitude compensation: the field is genuinely three-dimensional, and
 #      every one of those features is a function of direction.
-#   4. L6 — a *sharp* core-mantle step (sigma = 45 km^-1, a ~22 m transition) and
-#      two pairs of discrete ore bodies and voids. These are the true
-#      discontinuities of the model: a jump-surface representation is supposed to
-#      carry them directly, and their amplitudes are kept small enough that the
-#      cone-axis variation they add stays inside Carlson's slab budget.
+#   4. L6 — the true discontinuities: a narrow core-mantle step (sigma = 45 km^-1,
+#      a ~22 m transition) and two pairs of discrete ore bodies and voids. These
+#      are the surfaces a jump-surface representation is supposed to carry
+#      directly, and a voxel grid can only average them into a cell mass.
 #
-# The L6 discontinuities are the reason this layout replaced an earlier one built
-# around a factor-of-four radial stratification. That stratification was measured
-# to be *worse* for every solver at a 16 m observation surface: it pushed
-# Carlson's worst within-cone slab variation to 0.119 of rho(centroid) — its
-# slab budget is what limits that error, not its formulation — while leaving the
-# voxel solver's own residual essentially unchanged, because mascon's 16 m error
-# is set by the voxel near field, not by how the density is parameterised. See
-# `docs/MEASUREMENTS.local.md` for both data sets.
+# WHY THESE AMPLITUDES
+# --------------------
+# The contrast in L2-L5 is set by measurement, not by taste. Carlson's
+# slab refinement reaches its per-cone cap before it reaches the tolerance it
+# asks for, so its representation error saturates instead of falling smoothly.
+# Holding the L6 discontinuities fixed and scaling L2-L5, the worst
+# Carlson-versus-RT-FP disagreement at a 1 mm standoff moves from 4.55e-2 at the
+# shipped contrast to 6.11e-2 at 1.08x and 7.09e-2 at 1.54x; the project's own
+# cross-solver self-test (`bun run rtfp:selftest`, also exercised by
+# `cargo test --release`) rejects anything at or above 6e-2. The shipped contrast
+# is therefore the strongest one the solver budget actually supports.
+#
+# The L6 amplitudes are not part of that trade-off, which is worth stating
+# because it is counter-intuitive: halving the core step, widening it, or leaving
+# it at full strength all leave the worst within-cone variation at 5.76e-2. The
+# budget is spent on the angular field, not on the discontinuities, so the
+# discontinuities are carried at full strength.
+#
+# Two earlier layouts were measured and rejected. A purely radial stratification
+# (factor-of-four fall-off, sharp core step, light shell) pushed the worst
+# within-cone slab variation to 1.19e-1 of rho_ref and degraded every solver. A
+# version of the present layout with the L2-L5 contrast raised by 1.54x failed
+# the cross-solver bound at 7.09e-2. Both data sets are in
+# `docs/MEASUREMENTS.local.md`.
 #
 # NORMALISATION
 # -------------
@@ -64,17 +77,16 @@
 # The alternative convention (rho(0) = bulk_density_ref) is computed and printed
 # by every bake so that the two can never be silently confused.
 # =============================================================================
-
 type = "cauchy_kernels"
 alpha_default = 1.0
-model_id = "ryugu_angular_ore_belt_with_core_step_v4"
+model_id = "ryugu_angular_ore_belt_with_core_step_v5"
 total_mass_target = 4.50e11
 bulk_density_ref = 1190.0
 rock_density_ref = 1420.0
 ore_density_ref = 2800.0
 homogeneous = false
 design_goal = "directional_contrast_with_true_density_discontinuities"
-notes = "Designed stress case for arbitrary-density solvers: a 12-fold equatorial ore belt over a near-uniform matrix, plus a narrow core-mantle step and discrete ore bodies and voids. Not an observationally unique interior."
+notes = "Designed stress case for arbitrary-density solvers: a 12-fold equatorial ore belt over a near-uniform matrix, plus a narrow core-mantle step and discrete ore bodies and voids. The angular contrast is set at the strongest level the Carlson slab budget was measured to support. Not an observationally unique interior."
 
 kernels = [
   # ---------------------------------------------------------------------------
@@ -102,75 +114,75 @@ kernels = [
   # into a continuous radial column, so the belt is a strong function of
   # direction and only a weak function of radius.
   # ---------------------------------------------------------------------------
-  { role = "L2_belt_000_r120", c = [0.1200, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_030_r120", c = [0.1039, 0.0600, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_060_r120", c = [0.0600, 0.1039, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_090_r120", c = [0.0000, 0.1200, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_120_r120", c = [-0.0600, 0.1039, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_150_r120", c = [-0.1039, 0.0600, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_180_r120", c = [-0.1200, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_210_r120", c = [-0.1039, -0.0600, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_240_r120", c = [-0.0600, -0.1039, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_270_r120", c = [0.0000, -0.1200, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_300_r120", c = [0.0600, -0.1039, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_330_r120", c = [0.1039, -0.0600, 0.0], sigma = 10.0, w = 50.0 },
+  { role = "L2_belt_000_r120", c = [0.1200, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_030_r120", c = [0.1039, 0.0600, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_060_r120", c = [0.0600, 0.1039, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_090_r120", c = [0.0000, 0.1200, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_120_r120", c = [-0.0600, 0.1039, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_150_r120", c = [-0.1039, 0.0600, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_180_r120", c = [-0.1200, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_210_r120", c = [-0.1039, -0.0600, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_240_r120", c = [-0.0600, -0.1039, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_270_r120", c = [0.0000, -0.1200, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_300_r120", c = [0.0600, -0.1039, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_330_r120", c = [0.1039, -0.0600, 0.0], sigma = 10.0, w = 32.5 },
 
-  { role = "L2_belt_000_r180", c = [0.1800, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_030_r180", c = [0.1559, 0.0900, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_060_r180", c = [0.0900, 0.1559, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_090_r180", c = [0.0000, 0.1800, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_120_r180", c = [-0.0900, 0.1559, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_150_r180", c = [-0.1559, 0.0900, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_180_r180", c = [-0.1800, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_210_r180", c = [-0.1559, -0.0900, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_240_r180", c = [-0.0900, -0.1559, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_270_r180", c = [0.0000, -0.1800, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_300_r180", c = [0.0900, -0.1559, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_330_r180", c = [0.1559, -0.0900, 0.0], sigma = 10.0, w = 50.0 },
+  { role = "L2_belt_000_r180", c = [0.1800, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_030_r180", c = [0.1559, 0.0900, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_060_r180", c = [0.0900, 0.1559, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_090_r180", c = [0.0000, 0.1800, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_120_r180", c = [-0.0900, 0.1559, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_150_r180", c = [-0.1559, 0.0900, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_180_r180", c = [-0.1800, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_210_r180", c = [-0.1559, -0.0900, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_240_r180", c = [-0.0900, -0.1559, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_270_r180", c = [0.0000, -0.1800, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_300_r180", c = [0.0900, -0.1559, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_330_r180", c = [0.1559, -0.0900, 0.0], sigma = 10.0, w = 32.5 },
 
-  { role = "L2_belt_000_r240", c = [0.2400, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_030_r240", c = [0.2078, 0.1200, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_060_r240", c = [0.1200, 0.2078, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_090_r240", c = [0.0000, 0.2400, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_120_r240", c = [-0.1200, 0.2078, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_150_r240", c = [-0.2078, 0.1200, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_180_r240", c = [-0.2400, 0.0000, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_210_r240", c = [-0.2078, -0.1200, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_240_r240", c = [-0.1200, -0.2078, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_270_r240", c = [0.0000, -0.2400, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_300_r240", c = [0.1200, -0.2078, 0.0], sigma = 10.0, w = 50.0 },
-  { role = "L2_belt_330_r240", c = [0.2078, -0.1200, 0.0], sigma = 10.0, w = 50.0 },
+  { role = "L2_belt_000_r240", c = [0.2400, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_030_r240", c = [0.2078, 0.1200, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_060_r240", c = [0.1200, 0.2078, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_090_r240", c = [0.0000, 0.2400, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_120_r240", c = [-0.1200, 0.2078, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_150_r240", c = [-0.2078, 0.1200, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_180_r240", c = [-0.2400, 0.0000, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_210_r240", c = [-0.2078, -0.1200, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_240_r240", c = [-0.1200, -0.2078, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_270_r240", c = [0.0000, -0.2400, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_300_r240", c = [0.1200, -0.2078, 0.0], sigma = 10.0, w = 32.5 },
+  { role = "L2_belt_330_r240", c = [0.2078, -0.1200, 0.0], sigma = 10.0, w = 32.5 },
 
   # ---------------------------------------------------------------------------
   # L3 — Ridge regolith deficit directly above the belt: the equatorial column
   # is stratified (ore under rubble) instead of uniformly dense.
   # ---------------------------------------------------------------------------
-  { role = "L3_regolith_000", c = [0.3000, 0.0000, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_030", c = [0.2598, 0.1500, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_060", c = [0.1500, 0.2598, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_090", c = [0.0000, 0.3000, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_120", c = [-0.1500, 0.2598, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_150", c = [-0.2598, 0.1500, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_180", c = [-0.3000, 0.0000, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_210", c = [-0.2598, -0.1500, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_240", c = [-0.1500, -0.2598, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_270", c = [0.0000, -0.3000, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_300", c = [0.1500, -0.2598, 0.0], sigma = 10.0, w = -22.0 },
-  { role = "L3_regolith_330", c = [0.2598, -0.1500, 0.0], sigma = 10.0, w = -22.0 },
+  { role = "L3_regolith_000", c = [0.3000, 0.0000, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_030", c = [0.2598, 0.1500, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_060", c = [0.1500, 0.2598, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_090", c = [0.0000, 0.3000, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_120", c = [-0.1500, 0.2598, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_150", c = [-0.2598, 0.1500, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_180", c = [-0.3000, 0.0000, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_210", c = [-0.2598, -0.1500, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_240", c = [-0.1500, -0.2598, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_270", c = [0.0000, -0.3000, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_300", c = [0.1500, -0.2598, 0.0], sigma = 10.0, w = -14.3 },
+  { role = "L3_regolith_330", c = [0.2598, -0.1500, 0.0], sigma = 10.0, w = -14.3 },
 
   # ---------------------------------------------------------------------------
   # L4 — Polar deficits: the field is denser along the equator than towards the
   # poles, so it is not a function of radius alone.
   # ---------------------------------------------------------------------------
-  { role = "L4_polar_north", c = [0.0000, 0.0000, 0.2600], sigma = 8.0, w = -26.0 },
-  { role = "L4_polar_south", c = [0.0000, 0.0000, -0.2500], sigma = 8.0, w = -26.0 },
+  { role = "L4_polar_north", c = [0.0000, 0.0000, 0.2600], sigma = 8.0, w = -16.9 },
+  { role = "L4_polar_south", c = [0.0000, 0.0000, -0.2500], sigma = 8.0, w = -16.9 },
 
   # ---------------------------------------------------------------------------
   # L5 — Mid-latitude compensation mass, axisymmetric: closes the budget the core
   # and the belt opened without adding longitude structure of its own.
   # ---------------------------------------------------------------------------
-  { role = "L5_midlat_north", c = [0.0000, 0.0000, 0.1700], sigma = 6.0, w = 22.0 },
-  { role = "L5_midlat_south", c = [0.0000, 0.0000, -0.1650], sigma = 6.0, w = 22.0 },
+  { role = "L5_midlat_north", c = [0.0000, 0.0000, 0.1700], sigma = 6.0, w = 14.3 },
+  { role = "L5_midlat_south", c = [0.0000, 0.0000, -0.1650], sigma = 6.0, w = 14.3 },
 
   # ---------------------------------------------------------------------------
   # L6 — True discontinuities. A narrow core-mantle step, and two pairs of

@@ -39,8 +39,9 @@ static constexpr size_t FLUSH_EVERY = 16;
  * `extent/grid` wide, and the monopole-per-cell error falls roughly like the
  * cell size to the 1.7. Measured against the RT-FP Cauchy record at a 16 m
  * observation surface (same norm, same faces), the discretisation part of the
- * gap is ≈0.74 % median at 128³ (7.9 m cells) and ≈0.31 % at 192³ (5.2 m);
- * 256³ reaches ≈0.2 % but costs 8× the 128³ runtime. Override with `--grid`.
+ * gap is 0.711 % median at 128³ (7.9 m cells) and 0.297 % at 192³ (5.253 m
+ * cells). The same comparison at a 1 mm standoff is 40.6 % median, because the
+ * surface is then inside a cell. Override with `--grid`.
  */
 static constexpr size_t DEFAULT_GRID = 192;
 

@@ -25,9 +25,9 @@ faces, observation surface 16 m above the terrain, Ryugu mass 4.5 × 10¹¹ kg.
 
 | Pair | Same density? | median | p90 | p99 | max | > 5 % |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Carlson vs RT-FP** | yes (Cauchy field) | **0.108 %** | 0.27 % | 0.49 % | 22.4 % | 54 |
-| RT-FP vs Mascon | yes (Cauchy field) | 0.294 % | 0.78 % | 1.50 % | 96.1 % | 206 |
-| Carlson vs Mascon | yes (Cauchy field) | 0.312 % | 0.82 % | 1.58 % | 96.2 % | 252 |
+| **Carlson vs RT-FP** | yes (Cauchy field) | **0.115 %** | 0.28 % | 0.51 % | 24.6 % | 56 |
+| RT-FP vs Mascon | yes (Cauchy field) | 0.297 % | 0.79 % | 1.51 % | 96.2 % | 204 |
+| Carlson vs Mascon | yes (Cauchy field) | 0.316 % | 0.84 % | 1.61 % | 96.2 % | 255 |
 | **RT-FP vs Werner** | yes (uniform) | **4.49 × 10⁻⁷** | 1.1 × 10⁻⁶ | 1.8 × 10⁻⁶ | 3.5 × 10⁻⁶ | 0 |
 | **Carlson vs Werner** | yes (uniform) | **4.48 × 10⁻⁷** | 1.1 × 10⁻⁶ | 1.8 × 10⁻⁶ | 3.4 × 10⁻⁶ | 0 |
 
@@ -39,12 +39,12 @@ round-off of the 32-bit record these results are stored in. Two formulations
 that share no numerical machinery beyond the mesh agree with a third
 implementation to the precision of the file format.
 
-*On the varying field*, the two GPU solvers agree with each other to 0.11 %
-median, while the voxel solver sits 0.29 % away — a median difference three
-times larger from a solver that is also far heavier. The tails differ much more
-than the medians: Carlson and RT-FP stay inside 0.5 % for 99 % of faces, whereas
-mascon has 206 faces (0.1 %) beyond 5 %, with individual faces off by 96 %.
-Mascon's error is not a smooth bias that a calibration could absorb; it is
+*On the varying field*, the two GPU solvers agree with each other to 0.12 %
+median, while the voxel solver sits 0.30 % away — a median difference two and a
+half times larger from a solver that is also far heavier. The tails differ much
+more than the medians: Carlson and RT-FP stay inside 0.51 % for 99 % of faces,
+whereas mascon has 204 faces (0.1 %) beyond 5 %, with individual faces off by
+96 %. Mascon's error is not a smooth bias that a calibration could absorb; it is
 concentrated where the local terrain is closest to a cell centre.
 
 ### The same comparison at 1 mm
@@ -54,22 +54,56 @@ sampling manoeuvre or a low-altitude gravity-gradient survey occupies:
 
 | Pair | Same density? | median | p90 | p99 | max | > 5 % |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Carlson vs RT-FP** | yes | **0.365 %** | 0.95 % | 2.33 % | 36.0 % | 293 |
-| RT-FP vs Mascon | yes | 40.4 % | 82.1 % | 98.3 % | 99.98 % | 186 268 |
-| Carlson vs Mascon | yes | 40.6 % | 82.2 % | 98.3 % | 99.98 % | 186 308 |
+| **Carlson vs RT-FP** | yes | **0.36 %** | 0.94 % | 2.37 % | 38.5 % | 316 |
+| RT-FP vs Mascon | yes | 40.6 % | 82.3 % | 98.3 % | 99.98 % | 186,322 |
+| Carlson vs Mascon | yes | 40.7 % | 82.3 % | 98.3 % | 99.98 % | 186,351 |
 
-The two grid-free solvers stay mutually consistent to a third of a percent
-median. Mascon does not degrade gently: **94.7 % of faces** disagree with the
-grid-free result by more than five percent, the median disagreement is 40 %, and
-mascon's own maximum reading is 3.55 × 10⁻³ against 2.33 × 10⁻⁶ from the exact
-solvers — a factor of 1 500. A 5.2 m cell cannot represent a field whose
-observation point is 1 mm away from the boundary of the body.
+Carlson and RT-FP lose almost nothing when the surface moves from
+16 m down to 1 mm: the median disagreement grows from 0.12 % to 0.36 %, and 316
+of 196,608 faces (0.16 %) exceed 5 %. Both stay usable in the regime a lander, a
+sampling manoeuvre or a low-altitude gradient survey actually occupies.
 
-Cost, on the same machine: RT-FP evaluates the whole mesh in about 20 s, Carlson
-in about 12 min. The uniform-density reference bake is the one that becomes
-impractical here — it advances through 2 688 of 196 608 faces in 90 s at 1 mm
-against a full mesh in about a minute at 16 m — which is why the near-surface
-comparison above is between the two GPU solvers and the voxel solver.
+Mascon does not. Its median disagreement against either GPU solver is 40.6 %,
+and its computed field is on average 4.76× larger than RT-FP's on the same face.
+A voxel direct sum is simply not defined at a standoff an order of magnitude
+below its own cell size (5.253 m), and nothing about that number is a rendering
+artefact: it is the difference between the two stored records.
+
+The practical reading is a standoff rule. A voxel model needs a handful of cells
+between the observation point and the body — for this mesh, roughly 15–25 m at a
+192³ grid and 24–40 m at 128³. Below that the grid has to be refined until its
+cells are small compared with the standoff, which is the cost the two surface
+methods do not pay at all.
+
+## The density field
+
+`assets/density/cauchy.toml` is a **designed stress case**, not an inversion
+product, and its shape follows the algorithms rather than the other way round.
+
+Carlson resolves the interior along each cone axis, so structure that varies
+with *direction* is free to it and structure that varies with *radius* costs
+slabs. RT-FP integrates the radial direction in closed form, so radial structure
+is free to it and directional structure has to stay smooth on the scale of its
+288-direction quadrature. The field therefore puts most of its variation in
+direction — a 12-fold equatorial ore belt over a near-uniform matrix, with a
+regolith deficit, polar deficits and a mid-latitude compensation — and carries
+two classes of genuine discontinuity: a narrow core–mantle step and discrete ore
+bodies and voids. A voxel grid can only average those into a cell mass.
+
+The contrast is set by measurement, not by taste. Carlson's slab refinement
+reaches its per-cone cap before it reaches the tolerance it requests, so its
+representation error saturates rather than falling smoothly. Scaling the angular
+layers alone, the worst Carlson-versus-RT-FP disagreement at a 1 mm standoff
+moves from **4.55 × 10⁻²** at the shipped contrast to 6.38 × 10⁻² at 1.08× and
+7.09 × 10⁻² at 1.54×, and the cross-solver self-test rejects anything at or above
+6 × 10⁻². The shipped field is the strongest one the solver budget actually
+supports. The discontinuities are not part of that trade-off — halving, widening
+or keeping the core step leaves the worst within-cone variation unchanged at
+5.76 × 10⁻² — so they are carried at full strength.
+
+Two earlier layouts were measured and rejected: a purely radial stratification
+(worst within-cone slab variation 1.19 × 10⁻¹, worse for every solver) and a
+version of this layout at 1.54× the angular contrast (fails the self-test).
 
 ## Verification
 
@@ -87,20 +121,26 @@ line below is a measured number from the current revision.
 | Direct 24³ point-mass sum vs ESA, same body | 3.3 × 10⁻⁷ |
 | Closed-form surface form vs ESA, real mesh, 40 samples | median 6.5 × 10⁻¹², worst 2.1 × 10⁻⁹ |
 | Carlson, uniform density vs the polyhedral tensor | median 6.7 × 10⁻⁴, worst 3.3 × 10⁻³ |
+| Carlson, Cauchy field vs RT-FP, 1 mm | median 1.05 × 10⁻², worst 4.55 × 10⁻² |
+| Carlson, Cauchy field vs RT-FP, 16 m | median 2.31 × 10⁻³, worst 2.14 × 10⁻² |
 | WGSL near-field kernel vs an f64 closed form | median 4.3 × 10⁻⁴, worst 3.3 × 10⁻³ |
 | BVH traversal vs brute-force intersection | identical |
-| WGSL rays + remainder vs an f64 brute force | median 2.8 × 10⁻⁷, p90 4.7 × 10⁻⁷ |
+| WGSL rays + remainder vs an f64 brute force | median 3.0 × 10⁻⁷, p90 5.0 × 10⁻⁷ |
 
-The two `10⁻³`-level entries are the 32-bit storage of the analytic kernel, not
+The two `10⁻³`-level analytic entries are the 32-bit storage of the kernel, not
 the formulation: both are measured against a double-precision reference and
 disappear if the same comparison is done before narrowing to `f32`.
+
+The two cross-solver rows are sampled checks on a fixed probe set, not the full
+mesh, so they read slightly worse than the all-face table at the top; both are
+gated by the same `6 × 10⁻²` worst-case limit.
 
 Two honest caveats, both visible in the table above:
 
 * The WGSL ray/remainder path has rare outliers — 2 of 192 probe points exceeded
   5 % — on samples placed exactly on a face plane, where the ray hits a
-  degenerate edge. The mesh-scale comparison used for the record is not
-  affected at that rate (54 of 196,608 faces).
+  degenerate edge. The mesh-scale comparison used for the record is not affected
+  at that rate (56 of 196,608 faces).
 * Ryugu is **not** star-shaped from its centroid (signed volume over covered
   volume = 0.99898), so Carlson's cone decomposition is not exact. The residual
   is a fixed, measurable offset that the construction keeps out of the
@@ -110,7 +150,7 @@ Two honest caveats, both visible in the table above:
 ## Why Carlson and RT-FP
 
 **They do not need a volumetric grid.** Both work directly from the mesh and an
-analytic density, so the accuracy limit never becomes "the cell is 5.2 m wide".
+analytic density, so the accuracy limit never becomes "the cell is 5.25 m wide".
 The observation surface can be a millimetre above the terrain — the regime a
 lander, a sampling manoeuvre, or a low-altitude gravity-gradient survey actually
 occupies — without the solver's own representation getting in the way.
@@ -127,7 +167,7 @@ a closed-form near field plus a directional quadrature of the density deviation;
 Carlson reduces the whole problem to a jump-surface integral with no rays and no
 directions. Sharing only the mesh, they are a real cross-check: a coding error in
 either would have to be mirrored in the other to stay hidden. That is what makes
-the 0.11 % agreement on a varying density meaningful rather than circular.
+the 0.12 % agreement on a varying density meaningful rather than circular.
 
 **They are indifferent to how the density is parameterised.** RT-FP integrates
 the radial direction in closed form, so fine *radial* structure costs nothing and
@@ -138,9 +178,10 @@ void is expressed directly as jump surfaces rather than smeared onto a grid.
 ## Where they lose
 
 * **Carlson pays for density contrast inside a cell.** Its error is set by how
-  much the density varies across one cone slab. A high-frequency field needs many
-  slabs, which costs memory. Every run prints the tolerance it reached and the
-  worst within-slab variation, so the number is never assumed.
+  much the density varies across one cone slab, and the slab budget is finite:
+  past a threshold the refinement saturates and the error stops falling. Every
+  run prints the tolerance it reached and the worst within-slab variation, so the
+  number is never assumed.
 * **Carlson's cone decomposition assumes a star-shaped body.** The deviation is
   small (0.1 % on Ryugu) but it is a modelling choice, not a numerical accident.
 * **RT-FP needs a radially integrable density law.** The shipped field is a sum
@@ -192,17 +233,16 @@ Werner, uniform density, 16 m — the reference both exact solvers reproduce to
 ![Werner, uniform density, 16 m](docs/images/werner-uniform-16m.png)
 
 The same field and mesh one millimetre above the terrain. Carlson's panel
-reports the residuals directly: 40.5 % median against the voxel record, and the
-uniform-density reference is flagged as a height mismatch because that record
-is still baked at 16 m.
+reports the residuals directly, and the uniform-density reference is flagged as a
+height mismatch because that record is still baked at 16 m.
 
 ![Carlson, Cauchy density, 1 mm](docs/images/carlson-cauchy-1mm.png)
 
 ![RT-FP, Cauchy density, 1 mm](docs/images/rtfp-cauchy-1mm.png)
 
-Mascon at the same surface: the colour window had to switch to `asinh`, the
-`std/mean` of the record jumps from 0.17 to 11.9, and the body dissolves into
-per-cell speckle. This is the failure mode, not a rendering artefact.
+Mascon at the same surface: the colour window has to switch to `asinh`, the
+`std/mean` of the record jumps, and the body dissolves into per-cell speckle.
+This is the failure mode, not a rendering artefact.
 
 ![Mascon, Cauchy density, 1 mm](docs/images/mascon-cauchy-1mm.png)
 
@@ -239,7 +279,7 @@ OBJ=../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj
 
 # Carlson, same field and surface
 ./target/release/rtfp-bake --obj "$OBJ" --out assets/records/carlson_cauchy_faces.bin \
-  --order assets/records/.carlson_order.bin --density assets/density/cauchy.toml \
+  --order assets/records/.carlson_cauchy_order.bin --density assets/density/cauchy.toml \
   --mode cauchy --solver carlson --standoff-mm 16000 --normalize total_mass
 
 # Mascon, same field and surface
@@ -263,8 +303,9 @@ never a bookkeeping difference.
 ### Tests
 
 ```sh
-cd bakes/rtfp && cargo test --release      # 11 unit tests
-bun run rtfp:selftest                      # closed-form + cross-solver, needs a GPU
+cd bakes/rtfp && cargo test --release      # unit tests, plus the closed-form and
+                                           # cross-solver checks when the mesh is present
+bun run rtfp:selftest                      # same checks, verbose, needs a GPU
 bun run typecheck                          # server and tools
 ```
 

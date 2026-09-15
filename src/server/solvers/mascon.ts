@@ -26,14 +26,15 @@ const MASCON_LOG = join(ROOT, "assets/records/.mascon_progress.log");
 const MASCON_DENSITY = join(ROOT, "assets/density/cauchy.toml");
 const MASCON_MAGIC = 0x52484746;
 /**
- * 192³ halved the discretisation gap against RT-FP (0.74 % → 0.31 % median at a
- * 16 m standoff); 256³ is better still but 8× slower than 128³.
+ * 192³ halved the discretisation gap against RT-FP (0.711 % → 0.297 % median at
+ * a 16 m standoff), matching the values quoted in the C++ bake.
  */
 const MASCON_GRID = Number(Bun.env.MASCON_GRID ?? 192);
 /**
- * Slider bounds: 1 mm – 32 m. Mascon is a voxel direct sum with 7.9 m cells, so
- * 1 mm is meaningless for it: at 1 mm the field is ~250 % off, at 16 m (two cells
- * out) the residual against RT-FP is 0.76 % median.
+ * Slider bounds: 1 mm – 32 m. Mascon is a voxel direct sum with 5.253 m cells at
+ * the default 192³ grid, so 1 mm is meaningless for it: at a 1 mm standoff the
+ * record is 40.6 % off RT-FP (median) and 4.76× too large on average, while at
+ * 16 m — three cells out — the residual is 0.297 % median.
  */
 const MASCON_STANDOFF_DEFAULT_MM = 16000;
 const MASCON_STANDOFF_MAX_MM = 32000;

@@ -106,7 +106,7 @@
     //
     // Two useful bands sit four orders of magnitude apart: the exact solvers
     // (Werner, RT-FP, Carlson) are still sharp at 1 mm, whereas mascon is a
-    // direct sum over 7.9 m voxels and collapses there. A single linear track
+    // direct sum over 5.253 m voxels and collapses there. A single linear track
     // cannot address both, so *every* algorithm is given the same two-segment
     // vertical slider:
     //
@@ -467,7 +467,7 @@
      * Reference records.
      *
      * Werner is the *uniform*-density solver (ρ₀ = 1190 kg/m³) and Mascon is the
-     * *Cauchy*-density one (assets/density/cauchy.toml on 7.9 m voxels). Each
+     * *Cauchy*-density one (assets/density/cauchy.toml on 5.253 m voxels). Each
      * density model therefore has its own independent reference, and both are
      * shown so the panel states how far the active record sits from either.
      */
