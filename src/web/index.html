@@ -65,11 +65,38 @@
       background: rgba(155,183,255,.14); color: #cbd8ff;
       font-size: 10px; font-weight: 650; white-space: nowrap;
     }
+    #mobile-warning {
+      position: fixed; inset: 0; z-index: 20;
+      display: grid; place-items: center; padding: 1.25rem;
+      background: rgba(5,5,8,.9); backdrop-filter: blur(10px);
+    }
+    #mobile-warning[hidden] { display: none; }
+    #mobile-warning > div {
+      width: min(34rem, 100%); padding: 1.15rem 1.25rem;
+      border: 1px solid rgba(255,193,120,.42); border-radius: 8px;
+      background: #141118; box-shadow: 0 18px 60px rgba(0,0,0,.45);
+    }
+    #mobile-warning strong { display: block; margin-bottom: .5rem; color: #ffd6a0; font-size: 16px; }
+    #mobile-warning p { margin: 0 0 .9rem; color: #ded9e8; font-size: 13px; line-height: 1.55; }
+    #mobile-warning button {
+      border: 0; border-radius: 8px; padding: .45rem .8rem;
+      color: #0b0b10; background: #e8b86d; font-weight: 700; cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <canvas id="bevy"></canvas>
   <div id="msg"></div>
+  <div id="mobile-warning" role="alert" hidden>
+    <div>
+      <strong>Desktop browser required</strong>
+      <p>
+        Mobile support for Android and iOS is not available yet. This WebGPU
+        viewer currently requires a desktop browser such as Chrome or Edge.
+      </p>
+      <button id="mobile-warning-dismiss" type="button">Continue anyway</button>
+    </div>
+  </div>
   <div id="algo-bar">
     <span id="algo-label">Werner · uniform density</span>
     <button id="algo-btn" type="button">Next algorithm</button>
@@ -117,6 +144,19 @@
     const standoffVal = document.getElementById("standoff-val");
     const standoffRecord = document.getElementById("standoff-record");
     const standoffTitle = document.getElementById("standoff-title");
+    const mobileWarning = document.getElementById("mobile-warning");
+    const mobileWarningDismiss = document.getElementById("mobile-warning-dismiss");
+
+    const mobileUserAgent =
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+      || navigator.userAgentData?.mobile === true;
+    const smallTouchDevice =
+      navigator.maxTouchPoints > 1
+      && Math.min(window.screen.width, window.screen.height) <= 820;
+    if (mobileUserAgent || smallTouchDevice) mobileWarning.hidden = false;
+    mobileWarningDismiss.addEventListener("click", () => {
+      mobileWarning.hidden = true;
+    });
 
     // ---------------------------------------------------------------------
     // Observation-surface height
