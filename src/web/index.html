@@ -10,6 +10,26 @@
     html, body { margin: 0; height: 100%; background: #050508; color: #e8e6e3; font-family: ui-sans-serif, system-ui, sans-serif; }
     #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
     #msg { display: none; place-items: center; position: fixed; inset: 0; padding: 2rem; text-align: center; background: rgba(5,5,8,.72); z-index: 5; }
+    #compute-indicator {
+      position: fixed; top: 1rem; left: 1rem; z-index: 6;
+      display: inline-flex; align-items: center; gap: .45rem;
+      padding: .42rem .68rem; border-radius: 8px;
+      border: 1px solid rgba(255,193,120,.42);
+      background: rgba(20,17,24,.9); color: #ffd6a0;
+      box-shadow: 0 10px 30px rgba(0,0,0,.28);
+      backdrop-filter: blur(8px);
+      font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+    }
+    #compute-indicator::before {
+      content: ""; width: 7px; height: 7px; border-radius: 50%;
+      background: #ffb86b; box-shadow: 0 0 0 0 rgba(255,184,107,.55);
+      animation: compute-pulse 1.1s ease-out infinite;
+    }
+    #compute-indicator[hidden] { display: none; }
+    @keyframes compute-pulse {
+      70% { box-shadow: 0 0 0 7px rgba(255,184,107,0); }
+      100% { box-shadow: 0 0 0 0 rgba(255,184,107,0); }
+    }
     #algo-bar {
       position: fixed; top: 1rem; right: 1rem; z-index: 4;
       display: flex; gap: .5rem; align-items: center;
@@ -87,6 +107,7 @@
 <body>
   <canvas id="bevy"></canvas>
   <div id="msg"></div>
+  <div id="compute-indicator" role="status" aria-live="polite" hidden>计算中 · 0.0%</div>
   <div id="mobile-warning" role="alert" hidden>
     <div>
       <strong>Desktop browser required</strong>
@@ -140,6 +161,7 @@
     const barFill = document.getElementById("bar-fill");
     const statusEl = document.getElementById("status");
     const compareEl = document.getElementById("compare");
+    const computeIndicator = document.getElementById("compute-indicator");
     const standoffRange = document.getElementById("standoff-range");
     const standoffStatic = document.getElementById("standoff-static");
     const standoffVal = document.getElementById("standoff-val");
@@ -450,6 +472,8 @@
 
     if (STATIC_DEMO) {
       bakeBtn.hidden = false;
+      bakeBtn.disabled = true;
+      bakeBtn.textContent = "Initializing…";
       resumeBtn.hidden = true;
       standoffStatic.hidden = false;
       standoffStatic.textContent = "Exact / full";
@@ -537,7 +561,7 @@
 
     function renderStatus(s) {
       const pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
-      barFill.style.transform = `scaleX(${pct / 100})`;
+      setBarPercent(pct);
       let line = s.message || s.state;
       if (s.total > 0) line += ` · ${pct.toFixed(1)}%`;
       if (s.error) line += ` · ${s.error}`;
@@ -573,6 +597,47 @@
         updateAlgorithmCompare(s);
       }
       if (s.state !== "done") window.__bakeScalarStats = null;
+    }
+
+    function setBarPercent(percent) {
+      const bounded = Math.max(0, Math.min(100, Number(percent) || 0));
+      barFill.style.transform = `scaleX(${bounded / 100})`;
+    }
+
+    function showComputeIndicator(percent, label = "") {
+      const bounded = Math.max(0, Math.min(99, Number(percent) || 0));
+      computeIndicator.hidden = false;
+      computeIndicator.textContent = `计算中${label ? ` · ${label}` : ""} · ${bounded.toFixed(1)}%`;
+    }
+
+    function hideComputeIndicator() {
+      computeIndicator.hidden = true;
+      computeIndicator.textContent = "计算中 · 0.0%";
+    }
+
+    function resetModelToGray() {
+      if (!wasmViewer?.push_bake_update) return;
+      const stub = new Uint8Array(28);
+      const view = new DataView(stub.buffer);
+      view.setUint32(0, 0x52484746, true);
+      view.setUint32(4, 5, true);
+      view.setUint32(8, 0, true);
+      wasmViewer.push_bake_update(stub);
+      window.__bakeScalarStats = null;
+    }
+
+    function cancelLivePreview() {
+      previewTarget = null;
+      previewGeneration++;
+      previewAbort?.abort();
+    }
+
+    function waitForFrame() {
+      return new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+
+    async function waitForRenderedFrames(count = 2) {
+      for (let i = 0; i < count; i++) await waitForFrame();
     }
 
     /** Colour-window statistics, so the panel explains what the renderer chose. */
@@ -940,17 +1005,23 @@
     ) {
       if (!STATIC_DEMO) return;
       const generation = ++recordGeneration;
+      cancelLivePreview();
+      hideComputeIndicator();
+      setBarPercent(0);
       setStandoffUi(mm);
       setStandoffRecordLabel(Number.NaN);
       compareKey = "";
       window.__bakeScalarStats = null;
       if (!livePreview || !wasmViewer) {
+        hideComputeIndicator();
+        setBarPercent(0);
         statusEl.textContent = "Full-height recomputation is not initialized";
         return;
       }
 
       if (!forceCompute && isStaticAnchor(mm)) {
         const asset = recordAsset();
+        statusEl.textContent = `Rendering exact precomputed ${fmtMm(mm)} record…`;
         try {
           const bytes = await loadRecordBytes(asset);
           if (generation !== recordGeneration || recordAsset() !== asset) return;
@@ -961,8 +1032,11 @@
           } else {
             wasmViewer.push_bake_update(bytes);
           }
+          await waitForRenderedFrames();
+          if (generation !== recordGeneration || recordAsset() !== asset) return;
           lastPulledKey = "";
           await refreshBakeScalarStats(parsed);
+          if (generation !== recordGeneration || recordAsset() !== asset) return;
           setStandoffRecordLabel(parsed.standoffMm);
           renderStatus({
             state: "done",
@@ -976,6 +1050,7 @@
           });
         } catch (e) {
           if (generation === recordGeneration) {
+            hideComputeIndicator();
             statusEl.textContent = `precomputed record failed: ${e}`;
           }
         }
@@ -988,8 +1063,6 @@
     function queueLivePreview(mm, { preserveWindow = false, generation = recordGeneration } = {}) {
       if (!STATIC_DEMO || !livePreview || !wasmViewer) return;
       previewTarget = { mm, preserveWindow, generation };
-      previewGeneration++;
-      previewAbort?.abort();
       if (!previewRunning) void runLivePreviewQueue();
     }
 
@@ -1007,10 +1080,14 @@
           previewAbort = controller;
           try {
             if (job.generation !== recordGeneration) continue;
+            const label = `Full surface recompute · ${fmtMm(job.mm)}`;
+            setBarPercent(0);
+            showComputeIndicator(0, `全表面 ${fmtMm(job.mm)}`);
+            resetModelToGray();
+            statusEl.textContent = `${label} · 0.0%`;
             const referenceBytes = await loadRecordBytes(asset);
             if (token !== previewGeneration || recordAsset() !== asset) continue;
             setStandoffRecordLabel(job.mm);
-            statusEl.textContent = `Full surface recompute · ${fmtMm(job.mm)} · 0.0%`;
             const result = await livePreview.evaluate({
               sourceSet: previewSourceSet(),
               heightMm: job.mm,
@@ -1019,9 +1096,11 @@
               onProgress: (pct) => {
                 if (token !== previewGeneration) return;
                 const bounded = Math.max(0, Math.min(1, pct));
-                barFill.style.transform = `scaleX(${bounded})`;
+                const computePercent = 99 * bounded;
+                setBarPercent(computePercent);
+                showComputeIndicator(computePercent, `全表面 ${fmtMm(job.mm)}`);
                 statusEl.textContent =
-                  `Full surface recompute · ${fmtMm(job.mm)} · ${(100 * bounded).toFixed(1)}%`;
+                  `${label} · ${computePercent.toFixed(1)}%`;
               },
             });
             if (token !== previewGeneration || !result || recordAsset() !== asset) continue;
@@ -1030,11 +1109,16 @@
             } else {
               wasmViewer.push_bake_update(result);
             }
+            showComputeIndicator(99, `渲染 ${fmtMm(job.mm)}`);
+            statusEl.textContent = `${label} · 渲染中 · 99.0%`;
+            await waitForRenderedFrames();
+            if (token !== previewGeneration || recordAsset() !== asset) continue;
             window.__bakeScalarStats = null;
             const parsed = parseFaceScalars(result);
             setStandoffRecordLabel(parsed?.standoffMm ?? job.mm);
             await refreshBakeScalarStats(parsed);
             if (token !== previewGeneration || recordAsset() !== asset) continue;
+            hideComputeIndicator();
             renderStatus({
               state: "done",
               message: `Full surface recompute · ${fmtMm(job.mm)}`
@@ -1047,6 +1131,7 @@
             });
           } catch (e) {
             if (token === previewGeneration) {
+              hideComputeIndicator();
               statusEl.textContent = `Full surface recompute failed: ${e}`;
             }
           } finally {
@@ -1055,6 +1140,7 @@
         }
       } finally {
         previewRunning = false;
+        hideComputeIndicator();
         bakeBtn.disabled = false;
         bakeBtn.textContent = "Recompute";
       }
@@ -1090,7 +1176,7 @@
             signal: controller.signal,
           })).json();
         if (generation !== recordGeneration) return null;
-        renderStatus(s);
+        if (!STATIC_DEMO || wasmViewer) renderStatus(s);
         await syncRecordFromStatus(s, generation);
         return s;
       } catch (e) {
@@ -1184,6 +1270,10 @@
     });
 
     applyAlgoLabels();
+    if (STATIC_DEMO) {
+      setBarPercent(0);
+      statusEl.textContent = "Initializing the full-surface recomputation engine…";
+    }
     if (!STATIC_DEMO) {
       const pollLoop = async () => {
         if (!document.hidden) await pollStatus();
@@ -1218,6 +1308,7 @@
           /* start gray; the bake may create the file */
         }
         wasm.run_with_bake(bakeBytes);
+        await waitForRenderedFrames();
         lastPulledKey = statusRecordKey(initialStatus);
         if (STATIC_DEMO) {
           const { LivePreview } = await import("./src/web/live_preview.js");
@@ -1230,8 +1321,21 @@
           await refreshBakeScalarStats(
             parseFaceScalars(bakeBytes) ?? null,
           );
+          renderStatus(initialStatus);
+          hideComputeIndicator();
+        } else {
+          setBarPercent(0);
+          statusEl.textContent = "No precomputed record is available.";
         }
+        bakeBtn.disabled = false;
+        bakeBtn.textContent = "Recompute";
       } catch (e) {
+        hideComputeIndicator();
+        setBarPercent(0);
+        if (STATIC_DEMO) {
+          bakeBtn.disabled = true;
+          bakeBtn.textContent = "Unavailable";
+        }
         show(String(e?.stack || e));
       }
     }
