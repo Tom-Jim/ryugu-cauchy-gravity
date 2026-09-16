@@ -8,10 +8,7 @@ const out = join(root, "dist");
 const files = [
   "pkg/ryugu_cauchy_gravity.js",
   "pkg/ryugu_cauchy_gravity_bg.wasm",
-  "src/web/live_preview.js",
   "assets/models/ryugu.glb",
-  "assets/live/face_observers.bin",
-  "assets/live/preview_sources.bin",
 ];
 
 rmSync(out, { recursive: true, force: true });

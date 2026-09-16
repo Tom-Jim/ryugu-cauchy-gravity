@@ -15,6 +15,8 @@ struct Globals {
     // Workgroups dispatched along `x`; `y` is the stride for points past the
     // 65535-per-dimension dispatch cap.
     grid_x: u32,
+    // First point in the block. Zero for the full pass.
+    point_offset: u32,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -94,10 +96,11 @@ fn analytic(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-    let pid = wid.x + wid.y * globals.grid_x;
-    if (pid >= globals.n_points) {
+    let local_pid = wid.x + wid.y * globals.grid_x;
+    if (local_pid >= globals.n_points) {
         return;
     }
+    let pid = local_pid + globals.point_offset;
     let x = points[pid].xyz;
     var w = array<f32, SLOTS>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     let n_faces = globals.n_faces;

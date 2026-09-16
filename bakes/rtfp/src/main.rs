@@ -17,6 +17,7 @@ mod analytic;
 mod bvh;
 mod carlson;
 mod carlson_alpha;
+mod checkpoint;
 mod density;
 mod esa;
 mod geom;
@@ -46,8 +47,13 @@ const DIRS_DEFAULT: usize = 288;
 /// Observation-surface bounds, shared with the C++ bakes: mascon's record lives
 /// up to 16 m above the surface, and the viewer's slider has to reach it.
 const STANDOFF_MAX_MM: f64 = 32000.0;
-/// Observation points per GPU block (bounds the interval buffers).
-const POINTS_PER_BLOCK: usize = 2048;
+/// Observation points per GPU block. Smaller submissions keep the desktop
+/// compositor responsive while the WGSL pipelines are saturated.
+// Keep one GPU submission short enough that the browser/compositor and
+// progress poller continue to run. A 512-point Carlson block can monopolise
+// the Metal queue for over a minute on large jump-surface scenes.
+const POINTS_PER_BLOCK: usize = 32;
+const CHECKPOINT_BLOCKS: usize = 32;
 
 /// Which solver produces the face scalars.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,7 +86,7 @@ struct Args {
     obj: PathBuf,
     out: PathBuf,
     order: PathBuf,
-    cache: PathBuf,
+    checkpoint: PathBuf,
     density: PathBuf,
     mode: DensityMode,
     normalize: Normalization,
@@ -100,13 +106,19 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+fn runtime_path(name: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join("ryugu-cauchy-gravity-live")
+        .join(name)
+}
+
 fn parse_args() -> Result<Args, String> {
     let r = root();
     let mut args = Args {
         obj: r.join("../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj"),
-        out: r.join("assets/records/rtfp_faces.bin"),
-        order: r.join("assets/records/.rtfp_order.bin"),
-        cache: r.join("assets/records/.rtfp_w_cache.bin"),
+        out: runtime_path("rtfp-cauchy.bin"),
+        order: runtime_path(".rtfp-cauchy-order"),
+        checkpoint: runtime_path(".rtfp-cauchy-vertex-checkpoint"),
         density: r.join("assets/density/cauchy.toml"),
         mode: DensityMode::Cauchy,
         // The TOML asks for the Ryugu mass scale, so that is the default; the
@@ -121,7 +133,8 @@ fn parse_args() -> Result<Args, String> {
     };
     let mut it = std::env::args().skip(1);
     // Tracked so the Carlson defaults below never override an explicit path.
-    let (mut out_set, mut order_set, mut normalize_set) = (false, false, false);
+    let (mut out_set, mut order_set, mut checkpoint_set, mut normalize_set) =
+        (false, false, false, false);
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
@@ -134,7 +147,10 @@ fn parse_args() -> Result<Args, String> {
                 args.order = PathBuf::from(value()?);
                 order_set = true;
             }
-            "--cache" => args.cache = PathBuf::from(value()?),
+            "--checkpoint" => {
+                args.checkpoint = PathBuf::from(value()?);
+                checkpoint_set = true;
+            }
             "--density" => args.density = PathBuf::from(value()?),
             "--mode" => args.mode = DensityMode::parse(&value()?)?,
             "--normalize" => {
@@ -167,7 +183,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "rtfp-bake --obj mesh.obj [--out path] [--order path] [--cache path]\n\
+                    "rtfp-bake --obj mesh.obj [--out path] [--order path] [--checkpoint path]\n\
                      \x20         [--density toml] [--mode cauchy|elliptic|constant] [--normalize rho0|total_mass|raw]\n\
                      \x20         [--solver ray|carlson|carlson-alpha] [--standoff-mm 1..32000] [--directions 288]\n\
                      \x20         [--resume] [--selftest]"
@@ -181,30 +197,28 @@ fn parse_args() -> Result<Args, String> {
     // unless the caller asked for something specific.
     if args.solver == Solver::Carlson {
         if !out_set {
-            args.out = r.join(format!(
-                "assets/records/carlson_{}_faces.bin",
-                args.mode.tag()
-            ));
+            args.out = runtime_path(&format!("carlson-{}.bin", args.mode.tag()));
         }
         if !order_set {
-            args.order = r.join(format!(
-                "assets/records/.carlson_{}_order.bin",
-                args.mode.tag()
-            ));
+            args.order = runtime_path(&format!(".carlson-{}-order", args.mode.tag()));
         }
-        // `--cache` is not consulted on this path: the Carlson face list depends on
-        // the density field, so its analytic pass cannot be replayed per standoff.
+        if !checkpoint_set {
+            args.checkpoint =
+                runtime_path(&format!(".carlson-{}-vertex-checkpoint", args.mode.tag()));
+        }
+        // The Carlson face list depends on the density field, so there is no
+        // standoff-replay cache on this path.
     }
     if args.solver == Solver::CarlsonAlpha {
         if !out_set {
-            args.out = r.join(format!(
-                "assets/records/carlsonalpha_{}_faces.bin",
-                args.mode.tag()
-            ));
+            args.out = runtime_path(&format!("carlsonalpha-{}.bin", args.mode.tag()));
         }
         if !order_set {
-            args.order = r.join(format!(
-                "assets/records/.carlsonalpha_{}_order.bin",
+            args.order = runtime_path(&format!(".carlsonalpha-{}-order", args.mode.tag()));
+        }
+        if !checkpoint_set {
+            args.checkpoint = runtime_path(&format!(
+                ".carlsonalpha-{}-vertex-checkpoint",
                 args.mode.tag()
             ));
         }
@@ -481,7 +495,7 @@ fn selftest_carlson(args: &Args) -> Result<(), String> {
         POINTS_PER_BLOCK,
         0,
     );
-    let got = scene.analytic_tensors()?;
+    let got = scene.carlson_surface_tensors()?;
     let mut errs: Vec<f64> = sample
         .iter()
         .enumerate()
@@ -879,79 +893,6 @@ fn rel6(a: &Sym6, b: &Sym6) -> f64 {
     d / frobenius(b).max(1e-300)
 }
 
-/// Uniform-density analytic tensor per observation point, cached per standoff.
-fn analytic_tensors(
-    args: &Args,
-    scene: &gpu::Scene,
-    points: &[[f64; 3]],
-) -> Result<Vec<Sym6>, String> {
-    if let Ok(bytes) = std::fs::read(&args.cache) {
-        if let Some(cached) = decode_cache(&bytes, points.len(), args.standoff_mm) {
-            println!(
-                "analytic tensor cache hit: {} points @ {} mm",
-                points.len(),
-                args.standoff_mm
-            );
-            return Ok(cached);
-        }
-    }
-    println!(
-        "analytic tensor: {} points × faces on the GPU",
-        points.len()
-    );
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-    let tensors = scene.analytic_tensors()?;
-    if let Some(bad) = tensors.iter().flatten().find(|v| !v.is_finite()) {
-        return Err(format!(
-            "analytic tensor produced a non-finite component ({bad})"
-        ));
-    }
-    if let Err(e) = std::fs::write(&args.cache, encode_cache(&tensors, args.standoff_mm)) {
-        eprintln!("warning: analytic tensor cache not written: {e}");
-    }
-    Ok(tensors)
-}
-
-fn encode_cache(t: &[Sym6], standoff_mm: f64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(24 + t.len() * 48);
-    out.extend_from_slice(b"RTFW");
-    out.extend_from_slice(&2u32.to_le_bytes());
-    out.extend_from_slice(&standoff_mm.to_le_bytes());
-    out.extend_from_slice(&(t.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    for h in t {
-        for v in h {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    out
-}
-
-fn decode_cache(bytes: &[u8], n_points: usize, standoff_mm: f64) -> Option<Vec<Sym6>> {
-    if bytes.len() < 24 || &bytes[0..4] != b"RTFW" {
-        return None;
-    }
-    let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
-    let mm = f64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    let n = u32::from_le_bytes(bytes[16..20].try_into().ok()?) as usize;
-    if version != 2 || n != n_points || (mm - standoff_mm).abs() > 1e-12 {
-        return None;
-    }
-    if bytes.len() < 24 + n * 48 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let base = 24 + i * 48;
-        let mut h = [0.0f64; 6];
-        for (k, slot) in h.iter_mut().enumerate() {
-            *slot = f64::from_le_bytes(bytes[base + k * 8..base + k * 8 + 8].try_into().ok()?);
-        }
-        out.push(h);
-    }
-    Some(out)
-}
-
 fn run(args: &Args) -> Result<(), String> {
     run_raylike(args, false)
 }
@@ -1011,8 +952,6 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
         POINTS_PER_BLOCK,
         kernels.len(),
     );
-    let w = analytic_tensors(args, &scene, &points)?;
-
     // Which vertices the record still needs (resume).
     let record = if args.resume {
         let existing = record::Record::open_resume(&args.out, nf)
@@ -1052,9 +991,29 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
     // instead is a *different* (always larger, by the triangle inequality)
     // quantity — it was worth 1.9 % median against the Werner record.
     let mut vertex_h = vec![[f64::NAN; 6]; nv];
+    let resumed_vertices = if args.resume {
+        match checkpoint::load(&args.checkpoint, nv)
+            .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?
+        {
+            Some(saved) => {
+                let count = saved.len();
+                vertex_h[..count].copy_from_slice(&saved);
+                println!("RESUME from {count} / {nv} vertex tensors");
+                count
+            }
+            None => 0,
+        }
+    } else {
+        0
+    };
     if !todo.is_empty() {
-        for lo in (0..nv).step_by(POINTS_PER_BLOCK) {
+        for (block, lo) in (0..nv).step_by(POINTS_PER_BLOCK).enumerate() {
             let hi = (lo + POINTS_PER_BLOCK).min(nv);
+            if hi <= resumed_vertices {
+                println!("PROGRESS_R {hi} {nv}");
+                continue;
+            }
+            let w_block = scene.analytic_tensors_block(lo, hi)?;
             let remainder = if general_alpha {
                 scene.block_carlson_alpha(&points[lo..hi], &dirs, kernels, t_max, t_min)?
             } else {
@@ -1066,7 +1025,7 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
                     continue;
                 }
                 let rho = density.rho(&points[vi], args.mode);
-                let mut h = w[vi];
+                let mut h = w_block[i];
                 for t in h.iter_mut() {
                     *t *= rho;
                 }
@@ -1075,8 +1034,13 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
                 }
                 vertex_h[vi] = h;
             }
+            if (block + 1) % CHECKPOINT_BLOCKS == 0 || hi == nv {
+                checkpoint::save(&args.checkpoint, &vertex_h, hi)
+                    .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?;
+            }
             println!("PROGRESS_R {hi} {nv}");
             std::io::Write::flush(&mut std::io::stdout()).ok();
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 
@@ -1242,15 +1206,42 @@ fn run_carlson(args: &Args) -> Result<(), String> {
         faces.len()
     );
     std::io::Write::flush(&mut std::io::stdout()).ok();
-    let h = scene.analytic_tensors()?;
-    if let Some(bad) = h.iter().flatten().find(|v| !v.is_finite()) {
+    let mut vertex_h = vec![[f64::NAN; 6]; nv];
+    let resumed_vertices = if args.resume {
+        match checkpoint::load(&args.checkpoint, nv)
+            .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?
+        {
+            Some(saved) => {
+                let count = saved.len();
+                vertex_h[..count].copy_from_slice(&saved);
+                println!("RESUME from {count} / {nv} vertex tensors");
+                count
+            }
+            None => 0,
+        }
+    } else {
+        0
+    };
+    for (block, lo) in (0..nv).step_by(POINTS_PER_BLOCK).enumerate() {
+        let hi = (lo + POINTS_PER_BLOCK).min(nv);
+        if hi <= resumed_vertices {
+            println!("PROGRESS_R {hi} {nv}");
+            continue;
+        }
+        scene.carlson_surface_block(lo, hi, &mut vertex_h)?;
+        if (block + 1) % CHECKPOINT_BLOCKS == 0 || hi == nv {
+            checkpoint::save(&args.checkpoint, &vertex_h, hi)
+                .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?;
+        }
+        println!("PROGRESS_R {hi} {nv}");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if let Some(bad) = vertex_h.iter().flatten().find(|v| !v.is_finite()) {
         return Err(format!(
             "carlson tensor produced a non-finite component ({bad})"
         ));
     }
-    // Each vertex is already the full `H` for the jump representation: no ρ(x)
-    // factor and no remainder term, which is what makes this an independent path.
-    let vertex_h: Vec<[f64; 6]> = h;
 
     let record = if args.resume {
         let existing = record::Record::open_resume(&args.out, nf)

@@ -16,7 +16,15 @@
  *  * the record file on disk, which is the only thing that can declare a bake
  *    *finished* (`done`), because it is also the thing the viewer renders.
  */
-import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   STANDOFF_DEFAULT_MM,
@@ -33,6 +41,13 @@ export const DEFAULT_OBJ =
 
 /** Face count of the Ryugu observation mesh, and the record's fixed size. */
 export const FACE_COUNT = 196608;
+const CHECKPOINT_HEADER_BYTES = 28;
+const MAX_CAPTURED_LOG_CHARS = 512 * 1024;
+const LOG_FLUSH_INTERVAL_MS = 100;
+const VERTEX_PROGRESS_START = 1;
+const VERTEX_PROGRESS_END = 90;
+const FACE_PROGRESS_START = 90;
+const FACE_PROGRESS_END = 99.9;
 
 export type DensityMode = "cauchy" | "constant" | "elliptic";
 export type DensityModeMap = Partial<Record<DensityMode, string>>;
@@ -67,10 +82,12 @@ export type SolverSpec = {
   outByMode: DensityModeMap;
   /** Density TOML consumed by each mode. */
   densityByMode: DensityModeMap;
-  /** Progressive write order, so a resumed run keeps the same face sequence. */
-  order: string;
-  /** stdout capture of the current run. */
-  log: string;
+  /** stdout capture per density mode. */
+  logByMode: DensityModeMap;
+  /** Per-vertex GPU tensor prefixes, one per density mode. */
+  checkpointByMode: DensityModeMap;
+  /** Progressive face-write order per density mode. */
+  orderByMode: DensityModeMap;
   /** Extra CLI arguments beyond the shared ones. */
   extraArgs: string[];
   /** Extra flags for a specific density mode (e.g. `--directions`). */
@@ -98,6 +115,18 @@ function readFileOrNull(path: string): Buffer | null {
   }
 }
 
+function vertexPercent(current: number, total: number) {
+  if (total <= 0) return VERTEX_PROGRESS_START;
+  const ratio = Math.max(0, Math.min(1, current / total));
+  return VERTEX_PROGRESS_START + (VERTEX_PROGRESS_END - VERTEX_PROGRESS_START) * ratio;
+}
+
+function facePercent(current: number, total: number) {
+  if (total <= 0) return FACE_PROGRESS_START;
+  const ratio = Math.max(0, Math.min(1, current / total));
+  return FACE_PROGRESS_START + (FACE_PROGRESS_END - FACE_PROGRESS_START) * ratio;
+}
+
 /** Build a controller bound to one `SolverSpec`. */
 export function createGpuSolver(spec: SolverSpec) {
   let child: ReturnType<typeof Bun.spawn> | null = null;
@@ -123,6 +152,18 @@ export function createGpuSolver(spec: SolverSpec) {
     return modePath(spec.outByMode, density, "record");
   }
 
+  function orderPath(density: DensityMode): string {
+    return modePath(spec.orderByMode, density, "order");
+  }
+
+  function logPath(density: DensityMode): string {
+    return modePath(spec.logByMode, density, "log");
+  }
+
+  function checkpointPath(density: DensityMode): string {
+    return modePath(spec.checkpointByMode, density, "checkpoint");
+  }
+
   const outPath = () => recordPath(densityMode);
 
   /**
@@ -136,19 +177,26 @@ export function createGpuSolver(spec: SolverSpec) {
     let defaultComplete = false;
     for (const mode of modes) {
       const path = modePath(spec.outByMode, mode, "record");
-      if (!existsSync(path)) continue;
       const cp = recordSummary(readFileOrNull(path) ?? Buffer.alloc(0));
-      if (!cp.exists) continue;
+      const vertex = vertexCheckpointFor(mode);
+      if (!cp.exists && !vertex.exists) continue;
       if (mode === spec.defaultDensity && cp.done) defaultComplete = true;
       let mtime = 0;
       try {
-        mtime = statSync(path).mtimeMs;
+        if (cp.exists) mtime = statSync(path).mtimeMs;
       } catch {
         /* the record disappeared between existsSync and statSync */
       }
+      try {
+        const checkpoint = checkpointPath(mode);
+        if (vertex.exists) mtime = Math.max(mtime, statSync(checkpoint).mtimeMs);
+      } catch {
+        /* the checkpoint disappeared between the header read and statSync */
+      }
       const candidate = {
         mode,
-        partial: cp.current > 0 && !cp.done,
+        partial: (cp.current > 0 && !cp.done)
+          || (vertex.exists && vertex.current > 0 && vertex.current < vertex.total),
         mtime,
       };
       if (
@@ -195,7 +243,8 @@ export function createGpuSolver(spec: SolverSpec) {
    */
   function externalPid(): number | null {
     try {
-      const out = Bun.spawnSync(["pgrep", "-f", "[r]tfp-bake"], {
+      const pattern = `[r]tfp-bake.*--solver ${spec.id}([[:space:]]|$)`;
+      const out = Bun.spawnSync(["pgrep", "-f", pattern], {
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -262,6 +311,37 @@ export function createGpuSolver(spec: SolverSpec) {
     };
   }
 
+  function vertexCheckpointFor(
+    density: DensityMode,
+  ): { exists: boolean; current: number; total: number } {
+    let fd: number | null = null;
+    let buf: Buffer;
+    try {
+      fd = openSync(checkpointPath(density), "r");
+      buf = Buffer.allocUnsafe(CHECKPOINT_HEADER_BYTES);
+      if (readSync(fd, buf, 0, CHECKPOINT_HEADER_BYTES, 0) < CHECKPOINT_HEADER_BYTES) {
+        return { exists: false, current: 0, total: 0 };
+      }
+    } catch {
+      return { exists: false, current: 0, total: 0 };
+    } finally {
+      if (fd !== null) closeSync(fd);
+    }
+    if (buf.subarray(0, 8).toString("ascii") !== "RYVHCP01") {
+      return { exists: false, current: 0, total: 0 };
+    }
+    const total = Number(buf.readBigUInt64LE(12));
+    const current = Number(buf.readBigUInt64LE(20));
+    if (!Number.isSafeInteger(total) || !Number.isSafeInteger(current) || current > total) {
+      return { exists: false, current: 0, total: 0 };
+    }
+    return { exists: current > 0, current, total };
+  }
+
+  function vertexCheckpoint(): { exists: boolean; current: number; total: number } {
+    return vertexCheckpointFor(densityMode);
+  }
+
   function parseProgress(text: string) {
     // `PROGRESS_R <vertices done> <vertices total>` is the remainder phase; face
     // lines follow it as the record is written, so both can move the bar.
@@ -271,22 +351,38 @@ export function createGpuSolver(spec: SolverSpec) {
     if (m) {
       const current = Number(m[1]);
       const total = Number(m[2]);
-      status.current = current;
-      status.total = total;
-      status.percent =
-        total > 0 ? Math.min(current >= total ? 99.9 : (100 * current) / total, 99.9) : 0;
-      status.message =
-        current >= total && total > 0
-          ? `Faces ${current} / ${total} (writing)`
-          : `Faces ${current} / ${total}`;
-    }
-    if (/analytic tensor/.test(text)) {
+      if (!faces && prog) {
+        status.current = current;
+        status.total = total;
+        status.percent = vertexPercent(current, total);
+        status.message = `GPU vertices ${current} / ${total}`;
+      } else {
+        status.current = current;
+        status.total = total;
+        status.percent = facePercent(current, total);
+        status.message =
+          current >= total && total > 0
+            ? `Faces ${current} / ${total} (writing)`
+            : `Faces ${current} / ${total}`;
+      }
+    } else if (/analytic tensor/.test(text)) {
       status.message = "Analytic near-field tensor (GPU)";
-      status.percent = Math.max(status.percent, 0.5);
-    }
-    if (/^solver=|^jump surfaces:/.test(text)) {
-      status.message = "Building the jump-surface list";
-      status.percent = Math.max(status.percent, 0.5);
+      status.percent = Math.max(status.percent, VERTEX_PROGRESS_START);
+    } else {
+      const evaluating = [...text.matchAll(/evaluating\s+(\d+)\s+vertices/g)].pop();
+      if (evaluating && status.current === 0) {
+        status.total = Number(evaluating[1]);
+        status.current = 0;
+        status.percent = 0;
+        status.message = `GPU points 0 / ${evaluating[1]}`;
+      } else if (/^solver=|^jump surfaces:/m.test(text)) {
+        status.message = spec.id === "carlson"
+          ? "Building the jump-surface list"
+          : spec.id === "carlson-alpha"
+            ? "Preparing radial finite-part buffers"
+            : "Preparing GPU buffers";
+        status.percent = Math.max(status.percent, VERTEX_PROGRESS_START);
+      }
     }
     if (/wrote\s+\d+\s+dense face/.test(text)) {
       // Completion is decided by the on-disk record, never by this log line.
@@ -296,25 +392,32 @@ export function createGpuSolver(spec: SolverSpec) {
 
   function applyCheckpoint() {
     const cp = checkpoint();
+    const vertex = vertexCheckpoint();
     const running = isRunning();
     if (cp.standoffMm > 0) standoffMm = cp.standoffMm;
     // Never advertise resume while a bake process is alive.
-    status.canResume = running ? false : cp.canResume;
+    const vertexResumable = vertex.exists && vertex.current < vertex.total;
+    status.canResume = running ? false : cp.canResume || vertexResumable;
     if (!cp.exists) {
       if (running && status.percent >= 100) status.percent = 0;
+      if (!running && vertexResumable) {
+        status.state = "idle";
+        status.message = `Resumable · vertices ${vertex.current} / ${vertex.total}`;
+        status.current = vertex.current;
+        status.total = vertex.total;
+        status.percent = vertexPercent(vertex.current, vertex.total);
+      } else if (!running) {
+        status = {
+          state: "idle",
+          current: 0,
+          total: 0,
+          percent: 0,
+          message: "Not started",
+          error: "",
+          canResume: false,
+        };
+      }
       return;
-    }
-    const logOwnsBar = /^Faces /.test(status.message || "");
-    if (!logOwnsBar) {
-      status.current = cp.current;
-      status.total = cp.total;
-      status.percent = cp.total > 0 ? Math.min(100, (100 * cp.current) / cp.total) : 0;
-    } else {
-      const cur = Math.max(status.current, cp.current);
-      const tot = Math.max(status.total, cp.total);
-      status.current = cur;
-      status.total = tot;
-      if (!cp.done) status.percent = tot > 0 ? Math.min(99.9, (100 * cur) / tot) : 0;
     }
     if (cp.done && !running) {
       status.state = "done";
@@ -325,20 +428,54 @@ export function createGpuSolver(spec: SolverSpec) {
       status.canResume = false;
     } else if (running) {
       status.state = "running";
-      if (!cp.done && status.percent >= 100) {
-        status.percent = cp.total > 0 ? Math.min(99.9, (100 * cp.current) / cp.total) : 0;
+      if (status.current === 0 && status.total === 0) {
+        if (vertex.current > 0) {
+          status.current = vertex.current;
+          status.total = vertex.total;
+          status.percent = vertexPercent(vertex.current, vertex.total);
+          status.message = `GPU vertices ${vertex.current} / ${vertex.total}`;
+        } else if (cp.current > 0) {
+          status.current = cp.current;
+          status.total = cp.total;
+          status.percent = facePercent(cp.current, cp.total);
+          status.message = `Faces ${cp.current} / ${cp.total}`;
+        }
       }
     } else if (cp.canResume) {
       status.state = "idle";
       status.message = `Resumable · faces ${cp.current} / ${cp.total}`;
       status.current = cp.current;
       status.total = cp.total;
-      status.percent = cp.total > 0 ? Math.min(99.9, (100 * cp.current) / cp.total) : 0;
+      status.percent = facePercent(cp.current, cp.total);
+    } else if (vertexResumable) {
+      status.state = "idle";
+      status.message = `Resumable · vertices ${vertex.current} / ${vertex.total}`;
+      status.current = vertex.current;
+      status.total = vertex.total;
+      status.percent = vertexPercent(vertex.current, vertex.total);
+    } else if (!running) {
+      status = {
+        state: "idle",
+        current: 0,
+        total: cp.total || 0,
+        percent: 0,
+        message: "Not started",
+        error: "",
+        canResume: false,
+      };
     }
   }
 
   function clearRecords() {
-    for (const p of [outPath(), spec.order, spec.log]) {
+    const checkpoint = checkpointPath(densityMode);
+    const paths = [
+      outPath(),
+      orderPath(densityMode),
+      logPath(densityMode),
+      checkpoint,
+      `${checkpoint}.tmp`,
+    ];
+    for (const p of paths) {
       try {
         if (existsSync(p)) unlinkSync(p);
       } catch {
@@ -349,8 +486,7 @@ export function createGpuSolver(spec: SolverSpec) {
 
   function boot() {
     densityMode = bootDensityMode();
-    applyCheckpoint();
-    const log = readFileOrNull(spec.log);
+    const log = readFileOrNull(logPath(densityMode));
     if (log) {
       try {
         parseProgress(log.toString("utf8"));
@@ -358,6 +494,7 @@ export function createGpuSolver(spec: SolverSpec) {
         /* ignore */
       }
     }
+    applyCheckpoint();
     if (!isRunning()) {
       const cp = checkpoint();
       if (cp.done) {
@@ -374,7 +511,7 @@ export function createGpuSolver(spec: SolverSpec) {
   }
 
   function statusResponse(): Response {
-    const log = readFileOrNull(spec.log);
+    const log = readFileOrNull(logPath(densityMode));
     if (log) {
       try {
         parseProgress(log.toString("utf8"));
@@ -455,7 +592,9 @@ export function createGpuSolver(spec: SolverSpec) {
 
     if (mode === "resume") {
       const cp = record;
-      const resumable = cp.exists && cp.current > 0 && !cp.done;
+      const vertex = vertexCheckpoint();
+      const resumable = (cp.exists && cp.current > 0 && !cp.done)
+        || (vertex.exists && vertex.current > 0 && vertex.current <= vertex.total);
       if (!resumable && !cp.done) {
         return fail(
           "No resumable record",
@@ -480,18 +619,28 @@ export function createGpuSolver(spec: SolverSpec) {
       await Bun.write(outPath(), blankRecord(FACE_COUNT, usedStandoffMm));
     }
 
-    await Bun.write(spec.log, "");
-    const cp0 = checkpoint();
+    await Bun.write(logPath(nextDensity), "");
+    const vertex0 = vertexCheckpoint();
+    const record0 = checkpoint();
+    const resumeFromVertex = mode === "resume" && vertex0.current > 0;
+    const resumeFromFaces = mode === "resume" && record0.current > 0;
     status = {
       state: "running",
-      current: cp0.current || 0,
-      total: cp0.total || FACE_COUNT,
-      percent:
-        mode === "restart"
-          ? 0
-          : cp0.total && cp0.current
-            ? Math.min(99.9, (100 * cp0.current) / cp0.total)
-            : 0,
+      current: resumeFromVertex
+        ? vertex0.current
+        : resumeFromFaces
+          ? record0.current
+          : 0,
+      total: resumeFromVertex
+        ? vertex0.total
+        : resumeFromFaces
+          ? record0.total
+          : FACE_COUNT,
+      percent: resumeFromVertex
+        ? vertexPercent(vertex0.current, vertex0.total)
+        : resumeFromFaces
+          ? facePercent(record0.current, record0.total)
+          : 0,
       message: startMessage(mode === "resume" ? "Resuming" : "Starting", nextDensity, usedStandoffMm),
       error: "",
       canResume: false,
@@ -504,7 +653,9 @@ export function createGpuSolver(spec: SolverSpec) {
       "--out",
       outPath(),
       "--order",
-      spec.order,
+      orderPath(nextDensity),
+      "--checkpoint",
+      checkpointPath(nextDensity),
       "--density",
       densityToml,
       "--mode",
@@ -523,6 +674,7 @@ export function createGpuSolver(spec: SolverSpec) {
 
     (async () => {
       let buf = "";
+      let lastFlush = 0;
       // Serialize merges — parallel stdout/stderr `buf +=` races freeze progress.
       let chain: Promise<void> = Promise.resolve();
       const append = (stream: ReadableStream<Uint8Array> | null) => {
@@ -536,10 +688,16 @@ export function createGpuSolver(spec: SolverSpec) {
             const chunk = dec.decode(value, { stream: true });
             chain = chain.then(async () => {
               buf += chunk;
-              await Bun.write(spec.log, buf);
+              if (buf.length > MAX_CAPTURED_LOG_CHARS) {
+                buf = buf.slice(-MAX_CAPTURED_LOG_CHARS);
+              }
               parseProgress(buf);
-              applyCheckpoint();
-              if (isRunning()) status.state = "running";
+              status.state = "running";
+              const now = Date.now();
+              if (now - lastFlush >= LOG_FLUSH_INTERVAL_MS) {
+                lastFlush = now;
+                await Bun.write(logPath(nextDensity), buf);
+              }
             });
             await chain;
           }
@@ -547,9 +705,10 @@ export function createGpuSolver(spec: SolverSpec) {
         return pump();
       };
       await Promise.all([append(proc.stdout), append(proc.stderr)]);
+      await Bun.write(logPath(nextDensity), buf);
       const code = await proc.exited;
       child = null;
-      const log = readFileOrNull(spec.log);
+      const log = readFileOrNull(logPath(nextDensity));
       if (log) {
         try {
           parseProgress(log.toString("utf8"));

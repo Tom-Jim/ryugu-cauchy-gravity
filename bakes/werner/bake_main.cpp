@@ -31,6 +31,21 @@ static constexpr uint32_t VERSION = 5;
 static constexpr size_t FACE_WINDOW = 128;
 static constexpr size_t FLUSH_EVERY = 64;
 
+static unsigned configured_thread_count() {
+    const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+    const char *requested = std::getenv("RYUGU_THREADS");
+    if (requested && std::strcmp(requested, "all") == 0) return hardware;
+    unsigned threads = std::min(hardware, 4u);
+    if (requested) {
+        char *end = nullptr;
+        const unsigned long value = std::strtoul(requested, &end, 10);
+        if (end != requested && value > 0) {
+            threads = static_cast<unsigned>(std::min<unsigned long>(value, hardware));
+        }
+    }
+    return std::max(1u, threads);
+}
+
 struct Mesh {
     std::vector<double> xyz;
     std::vector<uint32_t> faces;
@@ -340,7 +355,7 @@ int main(int argc, char **argv) {
     std::fflush(stdout);
 
     // Multi-handle workers: each ESA GravityEvaluable is NOT shared across threads.
-    unsigned nthreads = std::max(1u, std::thread::hardware_concurrency());
+    unsigned nthreads = configured_thread_count();
     std::vector<EsaPgHandle *> handles(nthreads, nullptr);
     handles[0] = handle;
     for (unsigned t = 1; t < nthreads; ++t) {
@@ -441,6 +456,7 @@ int main(int argc, char **argv) {
                 std::fflush(stdout);
             }
         }
+        std::this_thread::yield();
     }
 
     for (unsigned t = 1; t < nthreads; ++t) esa_pg_destroy(handles[t]);

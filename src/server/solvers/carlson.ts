@@ -13,21 +13,32 @@
  */
 import { join } from "node:path";
 import { ROOT, createGpuSolver } from "./gpu_solver";
+import { liveRecordPath, liveWorkPath } from "./live_paths";
 
 export const carlson = createGpuSolver({
   id: "carlson",
   label: "Carlson",
   defaultDensity: "cauchy",
   outByMode: {
-    cauchy: join(ROOT, "assets/records/carlson_cauchy_faces.bin"),
-    constant: join(ROOT, "assets/records/carlson_constant_faces.bin"),
+    cauchy: liveRecordPath("carlson", "cauchy"),
+    constant: liveRecordPath("carlson", "constant"),
   },
   densityByMode: {
     cauchy: join(ROOT, "assets/density/cauchy.toml"),
     constant: join(ROOT, "assets/density/cauchy.toml"),
   },
-  order: join(ROOT, "assets/records/.carlson_order.bin"),
-  log: join(ROOT, "assets/records/.carlson_progress.log"),
+  orderByMode: {
+    cauchy: liveWorkPath("carlson", "cauchy", "order"),
+    constant: liveWorkPath("carlson", "constant", "order"),
+  },
+  logByMode: {
+    cauchy: liveWorkPath("carlson", "cauchy", "log"),
+    constant: liveWorkPath("carlson", "constant", "log"),
+  },
+  checkpointByMode: {
+    cauchy: liveWorkPath("carlson", "cauchy", "checkpoint"),
+    constant: liveWorkPath("carlson", "constant", "checkpoint"),
+  },
   extraArgs: [],
   modeArgs: {},
 });

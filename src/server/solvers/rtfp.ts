@@ -12,6 +12,7 @@
  */
 import { join } from "node:path";
 import { ROOT, createGpuSolver } from "./gpu_solver";
+import { liveRecordPath, liveWorkPath } from "./live_paths";
 
 const DIRECTIONS = Number(process.env.RTFP_DIRECTIONS ?? 288);
 
@@ -20,15 +21,25 @@ export const rtfp = createGpuSolver({
   label: "RT-FP",
   defaultDensity: "cauchy",
   outByMode: {
-    cauchy: join(ROOT, "assets/records/rtfp_faces.bin"),
-    constant: join(ROOT, "assets/records/rtfp_constant_faces.bin"),
+    cauchy: liveRecordPath("rtfp", "cauchy"),
+    constant: liveRecordPath("rtfp", "constant"),
   },
   densityByMode: {
     cauchy: join(ROOT, "assets/density/cauchy.toml"),
     constant: join(ROOT, "assets/density/cauchy.toml"),
   },
-  order: join(ROOT, "assets/records/.rtfp_order.bin"),
-  log: join(ROOT, "assets/records/.rtfp_progress.log"),
+  orderByMode: {
+    cauchy: liveWorkPath("rtfp", "cauchy", "order"),
+    constant: liveWorkPath("rtfp", "constant", "order"),
+  },
+  logByMode: {
+    cauchy: liveWorkPath("rtfp", "cauchy", "log"),
+    constant: liveWorkPath("rtfp", "constant", "log"),
+  },
+  checkpointByMode: {
+    cauchy: liveWorkPath("rtfp", "cauchy", "checkpoint"),
+    constant: liveWorkPath("rtfp", "constant", "checkpoint"),
+  },
   extraArgs: [],
   // The direction count only enters the Cauchy remainder quadrature; the
   // constant-density control case has no kernels, so it needs no directions.

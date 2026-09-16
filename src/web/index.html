@@ -105,6 +105,125 @@
   </style>
 </head>
 <body>
+  <script>
+    (() => {
+      const LEASE_KEY = "ryugu-cauchy-gravity-active-tab-v1";
+      const TAB_KEY = "ryugu-cauchy-gravity-tab-id-v1";
+      const CHANNEL_KEY = "ryugu-cauchy-gravity-tab-channel-v1";
+      const LEASE_MS = 3000;
+      const identity = (raw) => {
+        try {
+          const url = new URL(raw, location.href);
+          return `${url.origin}${url.pathname}`;
+        } catch {
+          return String(raw);
+        }
+      };
+      const here = identity(location.href);
+      let id = "";
+      try {
+        id = sessionStorage.getItem(TAB_KEY) || "";
+        if (!id) {
+          id = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+          sessionStorage.setItem(TAB_KEY, id);
+        }
+      } catch {
+        id = `${Date.now()}-${Math.random()}`;
+      }
+      const channel = "BroadcastChannel" in window
+        ? new BroadcastChannel(CHANNEL_KEY)
+        : null;
+      let lease = null;
+      try {
+        lease = JSON.parse(localStorage.getItem(LEASE_KEY) || "null");
+      } catch {
+        lease = null;
+      }
+      const duplicate = Boolean(
+        lease
+        && lease.id !== id
+        && lease.identity === here
+        && Date.now() - Number(lease.ts) < LEASE_MS
+      );
+      window.__ryuguDuplicateTab = duplicate;
+
+      if (duplicate) {
+        channel?.postMessage({
+          type: "activate",
+          identity: here,
+          url: location.href,
+          from: id,
+        });
+        try {
+          window.open("", "_self");
+          window.close();
+        } catch {
+          /* normal browser tabs may only be closed when script-opened */
+        }
+        const showDuplicate = () => {
+          if (document.getElementById("duplicate-tab-notice")) return;
+          const notice = document.createElement("div");
+          notice.id = "duplicate-tab-notice";
+          notice.style.cssText =
+            "position:fixed;inset:0;z-index:9999;display:grid;place-items:center;"
+            + "padding:2rem;background:#050508;color:#e8e6e3;text-align:center;"
+            + "font:14px/1.5 ui-sans-serif,system-ui,sans-serif";
+          notice.textContent =
+            "This viewer is already open in another tab. The existing tab was activated.";
+          document.body.appendChild(notice);
+        };
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", showDuplicate, { once: true });
+        } else {
+          showDuplicate();
+        }
+        return;
+      }
+
+      const leaseValue = JSON.stringify({ id, identity: here, ts: Date.now() });
+      try {
+        localStorage.setItem(LEASE_KEY, leaseValue);
+      } catch {
+        /* private browsing can disable storage; the tab still loads */
+      }
+      window.__ryuguTabLease = { id, identity: here };
+      window.__ryuguMemoryLimitBytes = 5.5 * 1024 ** 3;
+      window.__ryuguReloadMemoryLimitBytes = 5.25 * 1024 ** 3;
+
+      channel?.addEventListener("message", (event) => {
+        const message = event.data;
+        if (message?.type !== "activate" || message.identity !== here) return;
+        try {
+          if (message.url) location.replace(message.url);
+        } catch {
+          window.focus();
+        }
+      });
+
+      const heartbeat = setInterval(() => {
+        try {
+          const current = JSON.parse(localStorage.getItem(LEASE_KEY) || "null");
+          if (current && current.id !== id) return;
+          localStorage.setItem(
+            LEASE_KEY,
+            JSON.stringify({ id, identity: here, ts: Date.now() }),
+          );
+        } catch {
+          /* ignore storage failures */
+        }
+      }, 1000);
+      window.addEventListener("pagehide", () => {
+        clearInterval(heartbeat);
+        try {
+          const current = JSON.parse(localStorage.getItem(LEASE_KEY) || "null");
+          if (current?.id === id) localStorage.removeItem(LEASE_KEY);
+        } catch {
+          /* ignore storage failures */
+        }
+        channel?.close();
+      }, { once: true });
+    })();
+  </script>
   <canvas id="bevy"></canvas>
   <div id="msg"></div>
   <div id="compute-indicator" role="status" aria-live="polite" hidden>计算中 · 0.0%</div>
@@ -144,6 +263,10 @@
     <div id="compare" hidden></div>
   </div>
   <script type="module">
+    if (window.__ryuguDuplicateTab) {
+      throw new Error("duplicate viewer tab blocked");
+    }
+
     const STATIC_DEMO =
       document.querySelector('meta[name="ryugu-mode"]')?.content === "static";
 
@@ -306,6 +429,7 @@
         short: "Werner · uniform density",
         title: "Werner · uniform density · analytic polyhedral gradient",
         api: "/api/werner",
+        record: "/api/werner/record",
         asset: "assets/records/gradient_faces.bin",
         compare: true,
         next: "Switch to Mascon (voxel)",
@@ -313,6 +437,7 @@
       mascon: {
         name: "Mascon",
         api: "/api/mascon",
+        record: "/api/mascon/record",
         densityModes: ["elliptic", "cauchy"],
         defaultDensity: "elliptic",
         assets: {
@@ -325,6 +450,7 @@
       model: {
         name: "RT-FP",
         api: "/api/rtfp",
+        record: "/api/rtfp/record",
         densityModes: ["cauchy", "constant"],
         defaultDensity: "cauchy",
         assets: {
@@ -337,6 +463,7 @@
       carlson: {
         name: "Carlson",
         api: "/api/carlson",
+        record: "/api/carlson/record",
         densityModes: ["cauchy", "constant"],
         defaultDensity: "cauchy",
         assets: {
@@ -349,6 +476,7 @@
       carlsonalpha: {
         name: "CarlsonAlpha",
         api: "/api/carlsonalpha",
+        record: "/api/carlsonalpha/record",
         densityModes: ["elliptic", "constant"],
         defaultDensity: "elliptic",
         assets: {
@@ -427,10 +555,19 @@
       return result;
     }
 
-    const recordAsset = () =>
-      (isDensitySelectable ? cfg.assets?.[densityMode] : cfg.asset)
-      ?? cfg.asset
-      ?? Object.values(cfg.assets ?? {})[0];
+    const recordAsset = () => {
+      if (!STATIC_DEMO && cfg.record) {
+        const mode = algo === "werner"
+          ? "uniform"
+          : resultMode() === "uniform"
+            ? "constant"
+            : resultMode();
+        return `${cfg.record}?density=${encodeURIComponent(mode)}`;
+      }
+      return (isDensitySelectable ? cfg.assets?.[densityMode] : cfg.asset)
+        ?? cfg.asset
+        ?? Object.values(cfg.assets ?? {})[0];
+    };
 
     async function loadRecordBytes(asset, signal) {
       if (!asset) throw new Error("solver record path is unavailable");
@@ -492,17 +629,20 @@
     algoBtn.textContent = cfg.next;
     algoBtn.addEventListener("click", switchAlgo);
     let wasmViewer = null;
+    let wasmRuntime = null;
+    let lastStatus = null;
+    let memoryGuardRunning = false;
 
     if (STATIC_DEMO) {
       bakeBtn.hidden = false;
       bakeBtn.disabled = true;
-      bakeBtn.textContent = "Initializing…";
+      bakeBtn.textContent = "Local only";
       resumeBtn.hidden = true;
       standoffStatic.hidden = false;
-      standoffStatic.textContent = "Live / temporary";
-      standoffTitle.textContent = "Release to recompute";
+      standoffStatic.textContent = "View only";
+      standoffTitle.textContent = "Observation height";
       standoffStatic.title =
-        "Every height runs a full live surface recompute; results stay in memory only.";
+        "The five native solver pipelines run only through the local development server.";
     }
 
     const show = (t) => {
@@ -584,6 +724,7 @@
     }
 
     function renderStatus(s) {
+      lastStatus = s;
       const pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
       setBarPercent(pct);
       let line = s.message || s.state;
@@ -600,6 +741,11 @@
       }
       statusEl.textContent = line;
       const running = s.state === "running";
+      if (running) {
+        showComputeIndicator(Math.min(99, pct), cfg.name);
+      } else {
+        hideComputeIndicator();
+      }
       if (STATIC_DEMO) {
         bakeBtn.hidden = false;
         bakeBtn.disabled = previewRunning;
@@ -662,6 +808,62 @@
 
     async function waitForRenderedFrames(count = 2) {
       for (let i = 0; i < count; i++) await waitForFrame();
+    }
+
+    async function samplePageMemory() {
+      const wasmBytes = wasmRuntime?.memory?.buffer?.byteLength ?? 0;
+      const jsBytes = Number(performance.memory?.usedJSHeapSize) || 0;
+      let measuredBytes = 0;
+      if (
+        crossOriginIsolated
+        && typeof performance.measureUserAgentSpecificMemory === "function"
+      ) {
+        try {
+          measuredBytes = Number(
+            (await performance.measureUserAgentSpecificMemory()).bytes,
+          ) || 0;
+        } catch {
+          /* the API is intentionally unavailable in most browser contexts */
+        }
+      }
+      return {
+        bytes: Math.max(measuredBytes, wasmBytes + jsBytes),
+        measuredBytes,
+        wasmBytes,
+        jsBytes,
+      };
+    }
+
+    function installMemoryGuard() {
+      if (memoryGuardRunning) return;
+      memoryGuardRunning = true;
+      const tick = async () => {
+        if (!memoryGuardRunning || document.hidden) {
+          if (memoryGuardRunning) setTimeout(tick, 5000);
+          return;
+        }
+        const sample = await samplePageMemory();
+        window.__ryuguMemoryStats = sample;
+        if (sample.bytes < window.__ryuguReloadMemoryLimitBytes) {
+          setTimeout(tick, 5000);
+          return;
+        }
+        memoryGuardRunning = false;
+        statusAbort?.abort();
+        pullAbort?.abort();
+        latestResults.clear();
+        window.__bakeScalarStats = null;
+        setBarPercent(0);
+        statusEl.textContent =
+          "Browser memory ceiling reached; reloading a clean viewer context…";
+        show(
+          `Viewer memory reached ${(sample.bytes / 1024 ** 3).toFixed(2)} GiB `
+          + `(hard ceiling ${(window.__ryuguMemoryLimitBytes / 1024 ** 3).toFixed(1)} GiB). `
+          + "Reloading before the tab can exceed 6 GiB.",
+        );
+        setTimeout(() => location.reload(), 1200);
+      };
+      setTimeout(tick, 5000);
     }
 
     /** Colour-window statistics, so the panel explains what the renderer chose. */
@@ -954,101 +1156,31 @@
 
     async function updateAlgorithmCompare(status) {
       if (!compareEl) return;
-      const generation = recordGeneration;
       const mode = resultMode();
       const order = COMPARE_ORDER[algo]?.[mode] ?? [];
-      const mineTag = `${cfg.name} ${densityLabel(mode)} density`;
       compareEl.hidden = false;
-      if (STATIC_DEMO) {
-        if (order.length === 0) {
-          compareEl.textContent = "当前模式没有同密度的临时比较结果。";
-          return;
-        }
-        const mine = latestResults.get(activeResultKey());
-        if (!status?.done || !mine || !sameStandoff(mine.standoffMm, status.standoffMm)) {
-          compareKey = "";
-          compareEl.textContent = `计算完成后将使用各算法最新一次临时结果比较；`
-            + ` ${cfg.name} 当前设置 ${fmtMm(standoffMm)}，参考算法也必须在同一高度完成计算。`;
-          return;
-        }
-        const key = [
-          mine.revision,
-          ...order.map((k) => {
-            const ref = COMPARE_REFS[k];
-            return `${k}:${latestResultFor(ref.algo, ref.densityMode)?.revision ?? "none"}`;
-          }),
-        ].join("|");
-        if (key === compareKey) return;
-        compareKey = key;
-        const lines = order.map((k) => compareCachedAgainst(COMPARE_REFS[k], mine));
-        compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
-        return;
-      }
-      if (!status?.done) {
-        compareKey = "";
-        compareEl.textContent = "Once the bake completes this record is compared"
-          + ` face by face against ${order.map((k) => {
-            const ref = COMPARE_REFS[k];
-            return `${ref.name} (${ref.kind})`;
-          }).join(" and ")};`
-          + " a relative difference above 5 % counts as a disagreement.";
-        return;
-      }
       if (order.length === 0) {
-        compareEl.textContent = "No same-density reference is available for this mode.";
+        compareEl.textContent = "当前模式没有同密度的临时比较结果。";
         return;
       }
-      if (compareBusy) return;
-      compareBusy = true;
-      try {
-        // Memoise on everything the comparison depends on: the density model,
-        // the active record, and each reference record.
-        const refStatuses = await Promise.all(order.map(async (k) => {
-          const ref = COMPARE_REFS[k];
-          if (!STATIC_DEMO) {
-            const payload = await (await fetch(ref.api, { cache: "no-store" })).json();
-            if (!ref.recordKey) return payload;
-            const record = payload.records?.[ref.recordKey] ?? {};
-            return {
-              ...payload,
-              state: record.done ? "done" : payload.state,
-              current: record.current ?? 0,
-              total: record.total ?? 0,
-              standoffMm: record.standoffMm ?? 0,
-            };
-          }
-          const parsed = parseFaceScalars(await loadRecordBytes(ref.asset));
-          if (!parsed) throw new Error(`invalid ${ref.name} reference`);
-          return {
-            state: "done",
-            current: parsed.total,
-            total: parsed.total,
-            standoffMm: parsed.standoffMm,
-          };
-        }));
-        const refSts = Object.fromEntries(order.map((k, i) => [k, refStatuses[i]]));
-        if (generation !== recordGeneration) return;
-        const mineKey = `${status.current ?? ""}/${status.total ?? ""}@${status.standoffMm ?? ""}`;
-        const refKey = order
-          .map((k, i) => `${k}:${refStatuses[i].state}:${refStatuses[i].current}/${refStatuses[i].total}@${refStatuses[i].standoffMm}`)
-          .join("|");
-        const key = `${algo}|${mode}|${mineKey}|${refKey}`;
-        if (key === compareKey) return;
-        compareKey = key;
-        const lines = [];
-        for (const k of order) {
-          lines.push(await compareAgainstRecord(COMPARE_REFS[k], refSts[k], mineTag));
-        }
-        if (generation !== recordGeneration) return;
-        compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
-      } catch (e) {
-        if (generation !== recordGeneration) return;
-        // Drop the memo so a transient read failure is retried on the next poll.
+      const mine = latestResults.get(activeResultKey());
+      if (!status?.done || !mine || !sameStandoff(mine.standoffMm, status.standoffMm)) {
         compareKey = "";
-        compareEl.textContent = `comparison failed: ${e}`;
-      } finally {
-        compareBusy = false;
+        compareEl.textContent = `计算完成后将使用各算法最新一次临时结果比较；`
+          + ` ${cfg.name} 当前设置 ${fmtMm(standoffMm)}，参考算法也必须在同一高度完成计算。`;
+        return;
       }
+      const key = [
+        mine.revision,
+        ...order.map((k) => {
+          const ref = COMPARE_REFS[k];
+          return `${k}:${latestResultFor(ref.algo, ref.densityMode)?.revision ?? "none"}`;
+        }),
+      ].join("|");
+      if (key === compareKey) return;
+      compareKey = key;
+      const lines = order.map((k) => compareCachedAgainst(COMPARE_REFS[k], mine));
+      compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
     }
 
     // ---------------------------------------------------------------------
@@ -1068,10 +1200,18 @@
       const generation = ++recordGeneration;
       const api = bakeApi;
       const density = densityMode;
+      const resumePercent = mode === "resume"
+        ? Math.max(0, Math.min(99.9, Number(lastStatus?.percent) || 0))
+        : 0;
+      resetModelToGray();
+      setBarPercent(resumePercent);
+      showComputeIndicator(resumePercent, cfg.name);
+      compareKey = "";
+      window.__bakeScalarStats = null;
       bakeBtn.disabled = true;
       resumeBtn.disabled = true;
       statusEl.textContent = mode === "resume"
-        ? "Restoring from the record and continuing…"
+        ? `Restoring from ${resumePercent.toFixed(1)}% and continuing…`
         : `Clearing the record and recomputing at ${fmtMm(standoffMm)}…`;
       try {
         const body = { mode, standoffMm };
@@ -1132,7 +1272,6 @@
       { preserveWindow = false, forceCompute = false } = {},
     ) {
       if (!STATIC_DEMO) return;
-      const generation = ++recordGeneration;
       cancelLivePreview();
       hideComputeIndicator();
       setBarPercent(0);
@@ -1140,14 +1279,8 @@
       setStandoffRecordLabel(Number.NaN);
       compareKey = "";
       window.__bakeScalarStats = null;
-      if (!livePreview || !wasmViewer) {
-        hideComputeIndicator();
-        setBarPercent(0);
-        statusEl.textContent = "Full-height recomputation is not initialized";
-        return;
-      }
-
-      queueLivePreview(mm, { preserveWindow, forceCompute, generation });
+      statusEl.textContent =
+        "GitHub Pages 仅供查看；请在本地开发服务中运行五条原生计算管线。";
     }
 
     function queueLivePreview(
@@ -1290,8 +1423,11 @@
           signal: controller.signal,
         })).json();
         if (generation !== recordGeneration) return null;
-        if (wasmViewer) renderStatus(s);
-        await syncRecordFromStatus(s, generation);
+        if (wasmViewer && s.done === true) {
+          await syncRecordFromStatus(s, generation);
+        } else if (wasmViewer) {
+          renderStatus(s);
+        }
         return s;
       } catch (e) {
         if (controller.signal.aborted || generation !== recordGeneration) return null;
@@ -1319,9 +1455,27 @@
 
     async function syncRecordFromStatus(s, generation) {
       if (!wasmViewer || generation !== recordGeneration) return;
+      // Partial checkpoints describe computation progress, not renderable data.
+      if (s.done !== true) return;
       const key = statusRecordKey(s);
       if (!key || key === lastPulledKey) return;
-      await pullBakeIntoWasm(wasmViewer, generation, key, s.done === true, s.parsed);
+      try {
+        const bytes = await loadRecordBytes(recordAsset());
+        if (generation !== recordGeneration) return;
+        const parsed = parseFaceScalars(bytes);
+        if (!parsed) throw new Error("invalid solver record");
+        const completed = rememberLatestResult(bytes, parsed, previewSourceSet());
+        lastPulledKey = key;
+        await renderCompletedResult(completed, {
+          preserveWindow: false,
+          generation,
+          message: s.message || `${cfg.name} complete`,
+        });
+      } catch (e) {
+        if (generation !== recordGeneration) return;
+        hideComputeIndicator();
+        statusEl.textContent = `record read failed: ${e}`;
+      }
     }
 
     async function pullBakeIntoWasm(
@@ -1427,47 +1581,50 @@
           setStandoffUi(urlStandoff);
         }
         const wasm = await import("./pkg/ryugu_cauchy_gravity.js");
-        await wasm.default({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
+        wasmRuntime = await wasm.default({
+          module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm",
+        });
         wasmViewer = wasm;
         let bakeBytes = new Uint8Array(28);
-        if (!STATIC_DEMO) {
+        if (!STATIC_DEMO && initialStatus?.done) {
           try {
             bakeBytes = await loadRecordBytes(recordAsset());
           } catch {
-            /* start gray; the local bake may create the file */
+            /* start gray; the completed record may be unavailable */
           }
         }
         wasm.run_with_bake(bakeBytes);
         await waitForRenderedFrames();
-        lastPulledKey = statusRecordKey(initialStatus);
-        if (STATIC_DEMO) {
-          const { LivePreview } = await import("./src/web/live_preview.js?v=4");
-          livePreview = new LivePreview({
-            sourceUrl: "./assets/live/preview_sources.bin?v=4",
-          });
-          await livePreview.init();
+        const initialParsed = !STATIC_DEMO && initialStatus?.done
+          ? parseFaceScalars(bakeBytes)
+          : null;
+        if (initialParsed) {
+          rememberLatestResult(bakeBytes, initialParsed, previewSourceSet());
         }
+        lastPulledKey = statusRecordKey(initialStatus);
         if (!STATIC_DEMO && initialStatus?.done) {
-          await refreshBakeScalarStats(
-            parseFaceScalars(bakeBytes) ?? null,
-          );
+          await refreshBakeScalarStats(initialParsed);
           renderStatus(initialStatus);
           hideComputeIndicator();
         } else if (STATIC_DEMO) {
           setBarPercent(0);
-          statusEl.textContent = "尚未计算。点击 Recompute，或切换算法开始计算。";
+          statusEl.textContent =
+            "GitHub Pages 仅供查看；请在本地开发服务中运行计算。";
+          bakeBtn.disabled = true;
+          bakeBtn.textContent = "Local only";
         } else {
           setBarPercent(0);
           statusEl.textContent = "No completed local solver result is available.";
         }
         bakeBtn.disabled = false;
         bakeBtn.textContent = "Recompute";
+        installMemoryGuard();
       } catch (e) {
         hideComputeIndicator();
         setBarPercent(0);
         if (STATIC_DEMO) {
           bakeBtn.disabled = true;
-          bakeBtn.textContent = "Unavailable";
+          bakeBtn.textContent = "Local only";
         }
         show(String(e?.stack || e));
       }

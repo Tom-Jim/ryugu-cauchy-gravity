@@ -34,6 +34,21 @@ static constexpr uint32_t MAGIC = 0x52484746; // 'RHGF'
 static constexpr uint32_t VERSION = 5;
 static constexpr size_t FACE_WINDOW = 128;
 static constexpr size_t FLUSH_EVERY = 16;
+
+static unsigned configured_thread_count() {
+    const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+    const char *requested = std::getenv("RYUGU_THREADS");
+    if (requested && std::strcmp(requested, "all") == 0) return hardware;
+    unsigned threads = std::min(hardware, 4u);
+    if (requested) {
+        char *end = nullptr;
+        const unsigned long value = std::strtoul(requested, &end, 10);
+        if (end != requested && value > 0) {
+            threads = static_cast<unsigned>(std::min<unsigned long>(value, hardware));
+        }
+    }
+    return std::max(1u, threads);
+}
 /**
  * Voxel grid. This is the one accuracy dial the direct sum has: cells are
  * `extent/grid` wide, and the monopole-per-cell error falls roughly like the
@@ -717,7 +732,7 @@ int main(int argc, char **argv) {
                 static_cast<unsigned long long>(nsrc));
     std::fflush(stdout);
 
-    unsigned nthreads = std::max(1u, std::thread::hardware_concurrency());
+    unsigned nthreads = configured_thread_count();
     std::printf("parallel vert hessian: %u threads, window=%zu faces\n", nthreads, FACE_WINDOW);
     std::fflush(stdout);
 
@@ -806,6 +821,7 @@ int main(int argc, char **argv) {
                 std::fflush(stdout);
             }
         }
+        std::this_thread::yield();
     }
 
     write_header(out, static_cast<uint32_t>(nf), static_cast<uint32_t>(nf), s_min, s_max);

@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { corsJson } from "./gpu_solver";
+import { liveRecordPath, liveWorkPath } from "./live_paths";
 
 const ROOT = join(import.meta.dir, "../../..");
 const MASCON_BIN = join(ROOT, "bakes/build/ryugu_mascon_bake_cpp");
@@ -30,20 +31,24 @@ const MASCON_DENSITIES: Record<
   { out: string; order: string; log: string; density: string; label: string }
 > = {
   cauchy: {
-    out: join(ROOT, "assets/records/mascon_faces.bin"),
-    order: join(ROOT, "assets/records/.mascon_order.bin"),
-    log: join(ROOT, "assets/records/.mascon_progress.log"),
+    out: liveRecordPath("mascon", "cauchy"),
+    order: liveWorkPath("mascon", "cauchy", "order"),
+    log: liveWorkPath("mascon", "cauchy", "log"),
     density: join(ROOT, "assets/density/cauchy.toml"),
     label: "Cauchy",
   },
   elliptic: {
-    out: join(ROOT, "assets/records/mascon_elliptic_faces.bin"),
-    order: join(ROOT, "assets/records/.mascon_elliptic_order.bin"),
-    log: join(ROOT, "assets/records/.mascon_elliptic_progress.log"),
+    out: liveRecordPath("mascon", "elliptic"),
+    order: liveWorkPath("mascon", "elliptic", "order"),
+    log: liveWorkPath("mascon", "elliptic", "log"),
     density: join(ROOT, "assets/density/cauchy_elliptic.toml"),
     label: "fractional Cauchy",
   },
 };
+
+export function masconRecordPath(density: MasconDensityMode): string {
+  return MASCON_DENSITIES[density].out;
+}
 /**
  * 192³ halved the discretisation gap against RT-FP (0.711 % → 0.297 % median at
  * a 16 m standoff), matching the values quoted in the C++ bake.

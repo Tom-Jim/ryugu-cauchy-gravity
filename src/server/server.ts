@@ -24,6 +24,7 @@ import { corsJson } from "./solvers/gpu_solver";
 import { bootMasconStatus, masconStatusResponse, startMasconBake } from "./solvers/mascon";
 import { bootRtfpStatus, rtfpStatusResponse, startRtfpBake } from "./solvers/rtfp";
 import { bootWernerStatus, startWernerBake, wernerStatusResponse } from "./solvers/werner";
+import { liveRecordPath, type LiveSolver } from "./solvers/live_paths";
 
 const ROOT = join(import.meta.dir, "../..");
 const PORT = Number(Bun.env.PORT ?? 3000);
@@ -138,7 +139,37 @@ Bun.serve({
   port: PORT,
   hostname: "0.0.0.0",
   async fetch(req) {
-    const { pathname } = new URL(req.url);
+    const { pathname, searchParams } = new URL(req.url);
+
+    const recordMatch = pathname.match(
+      /^\/api\/(werner|mascon|rtfp|carlson|carlsonalpha)\/record$/,
+    );
+    if (recordMatch) {
+      const solver = recordMatch[1] as LiveSolver;
+      const defaultDensity = solver === "werner"
+        ? "uniform"
+        : solver === "mascon"
+          ? "elliptic"
+          : solver === "rtfp" || solver === "carlson"
+            ? "cauchy"
+            : "elliptic";
+      const density = searchParams.get("density") ?? defaultDensity;
+      try {
+        const file = liveRecordPath(solver, density);
+        if (!(await Bun.file(file).exists())) {
+          return new Response("Not Found", { status: 404 });
+        }
+        return new Response(Bun.file(file), {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Cache-Control": "no-store",
+            "Cross-Origin-Resource-Policy": "same-origin",
+          },
+        });
+      } catch (error) {
+        return new Response(String(error), { status: 400 });
+      }
+    }
 
     const solver = SOLVERS[pathname.replace(/\/(status|start)$/, "")];
     if (solver) {

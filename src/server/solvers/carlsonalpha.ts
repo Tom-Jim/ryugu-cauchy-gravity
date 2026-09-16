@@ -8,21 +8,32 @@
  */
 import { join } from "node:path";
 import { ROOT, createGpuSolver } from "./gpu_solver";
+import { liveRecordPath, liveWorkPath } from "./live_paths";
 
 export const carlsonalpha = createGpuSolver({
   id: "carlson-alpha",
   label: "CarlsonAlpha",
   defaultDensity: "elliptic",
   outByMode: {
-    elliptic: join(ROOT, "assets/records/carlsonalpha_elliptic_faces.bin"),
-    constant: join(ROOT, "assets/records/carlsonalpha_constant_faces.bin"),
+    elliptic: liveRecordPath("carlsonalpha", "elliptic"),
+    constant: liveRecordPath("carlsonalpha", "constant"),
   },
   densityByMode: {
     elliptic: join(ROOT, "assets/density/cauchy_elliptic.toml"),
     constant: join(ROOT, "assets/density/cauchy.toml"),
   },
-  order: join(ROOT, "assets/records/.carlsonalpha_order.bin"),
-  log: join(ROOT, "assets/records/.carlsonalpha_progress.log"),
+  orderByMode: {
+    elliptic: liveWorkPath("carlsonalpha", "elliptic", "order"),
+    constant: liveWorkPath("carlsonalpha", "constant", "order"),
+  },
+  logByMode: {
+    elliptic: liveWorkPath("carlsonalpha", "elliptic", "log"),
+    constant: liveWorkPath("carlsonalpha", "constant", "log"),
+  },
+  checkpointByMode: {
+    elliptic: liveWorkPath("carlsonalpha", "elliptic", "checkpoint"),
+    constant: liveWorkPath("carlsonalpha", "constant", "checkpoint"),
+  },
   // Mascon uses the TOML weights as written when total_mass_target is zero.
   // Keep CarlsonAlpha on the same scale instead of falling back to rho(0).
   extraArgs: ["--normalize", "raw"],

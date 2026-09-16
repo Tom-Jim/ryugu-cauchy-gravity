@@ -21,13 +21,19 @@ import {
   recordSummary,
   type RecordSummary,
 } from "./record";
+import { liveRecordPath, liveWorkPath } from "./live_paths";
 
 const BIN = join(ROOT, "bakes/build/ryugu_gradient_bake_cpp");
 const OBJ =
   process.env.BAKE_OBJ ?? join(ROOT, "../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj");
-const OUT = join(ROOT, "assets/records/gradient_faces.bin");
-const ORDER = join(ROOT, "assets/records/.werner_order.bin");
-const LOG = join(ROOT, "assets/records/.werner_progress.log");
+const DENSITY = "uniform";
+const OUT = liveRecordPath("werner", DENSITY);
+const ORDER = liveWorkPath("werner", DENSITY, "order");
+const LOG = liveWorkPath("werner", DENSITY, "log");
+
+export function wernerRecordPath(): string {
+  return OUT;
+}
 
 export type WernerStatus = {
   state: "idle" | "running" | "done" | "error";
@@ -294,7 +300,7 @@ export async function startWernerBake(
         total: cp.total,
         percent: 0,
         message: "No resumable record",
-        error: 'press "Recompute" first, or check assets/records/gradient_faces.bin',
+        error: `press "Recompute" first, or check ${OUT}`,
         canResume: false,
       };
       return corsJson(payload(), 400);
