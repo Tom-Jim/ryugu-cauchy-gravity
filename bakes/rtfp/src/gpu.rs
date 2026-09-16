@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 /// Interval slots per (point, direction); mirrors `MAX_INTERVALS` in `rays.wgsl`.
-pub const MAX_INTERVALS: usize = 4;
+pub const MAX_INTERVALS: usize = 8;
 
 struct ThreadWaker(std::thread::Thread);
 
@@ -246,6 +246,7 @@ pub struct Scene {
     remainder_globals: wgpu::Buffer,
     points_block: wgpu::Buffer,
     kernels: wgpu::Buffer,
+    inside: wgpu::Buffer,
     w_out: wgpu::Buffer,
     rem_out: wgpu::Buffer,
     rays_bind: wgpu::BindGroup,
@@ -316,7 +317,9 @@ impl Scene {
             "ivals",
             block_capacity * n_dirs * MAX_INTERVALS * 8,
         );
-        let inside = storage_buffer(&device, "inside", block_capacity * 4);
+        // The final word is an atomic overflow counter shared by both ray entry
+        // points. Keeping it in this buffer avoids adding another storage binding.
+        let inside = storage_buffer(&device, "inside_and_overflow", (block_capacity + 1) * 4);
         let w_out = storage_buffer(&device, "w_out", n_points * 6 * 4);
         let rem_out = storage_buffer(&device, "rem_out", block_capacity * 6 * 4);
         let rays_globals = uniform_buffer(&device, "rays_globals", 32);
@@ -369,8 +372,9 @@ impl Scene {
             ],
         });
 
-        // One readback buffer, sized for the largest result (six f32 per point).
-        let readback_len = (n_points.max(block_capacity) * 6 * 4).max(16);
+        // One readback buffer, sized for the largest result (six tensor values
+        // plus one inside flag per point, then the overflow counter).
+        let readback_len = (n_points.max(block_capacity) * 7 * 4 + 4).max(16);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: readback_len as u64,
@@ -395,6 +399,7 @@ impl Scene {
             remainder_globals,
             points_block,
             kernels,
+            inside,
             w_out,
             rem_out,
             rays_bind,
@@ -483,6 +488,9 @@ impl Scene {
             .write_buffer(&self.points_block, 0, as_bytes(&pts));
         let kbuf = kernels_to_f32(kernels);
         self.queue.write_buffer(&self.kernels, 0, as_bytes(&kbuf));
+        let zero = 0u32.to_le_bytes();
+        self.queue
+            .write_buffer(&self.inside, (self.block_capacity * 4) as u64, &zero);
 
         // struct Globals { n_points, n_dirs, n_tris, grid_x, t_min, t_max, _pad, _pad }
         let ray_groups = ((n * self.n_dirs) as u32).div_ceil(64);
@@ -526,9 +534,36 @@ impl Scene {
             pass.dispatch_workgroups(groups, 1, 1);
         }
         enc.copy_buffer_to_buffer(&self.rem_out, 0, &self.readback, 0, (n * 24) as u64);
+        enc.copy_buffer_to_buffer(
+            &self.inside,
+            0,
+            &self.readback,
+            (n * 24) as u64,
+            (n * 4) as u64,
+        );
+        enc.copy_buffer_to_buffer(
+            &self.inside,
+            (self.block_capacity * 4) as u64,
+            &self.readback,
+            (n * 28) as u64,
+            4,
+        );
         self.queue.submit(Some(enc.finish()));
-        let data = self.read_f32(n * 6)?;
-        Ok(data
+        let data = self.read_f32(n * 7 + 1)?;
+        if data[n * 6..n * 7].iter().any(|inside| *inside != 0.0) {
+            return Err(
+                "observation point lies inside the mesh; the contact term is not enabled".into(),
+            );
+        }
+        if data[n * 7] != 0.0 {
+            return Err(format!(
+                "ray traversal exceeded the {MAX_INTERVALS}-interval / {}-hit capacity \
+                 ({} dropped intersections/intervals)",
+                crate::geom::MAX_HITS,
+                data[n * 7] as u32
+            ));
+        }
+        Ok(data[..n * 6]
             .as_chunks::<6>()
             .0
             .iter()
@@ -576,10 +611,8 @@ impl Scene {
             .get_mapped_range()
             .map_err(|e| format!("readback map range: {e}"))?;
         let mut out = Vec::with_capacity(count);
-        for i in 0..count {
-            out.push(f32::from_le_bytes(
-                mapped[i * 4..i * 4 + 4].try_into().unwrap(),
-            ));
+        for chunk in mapped.as_chunks::<4>().0 {
+            out.push(f32::from_le_bytes(*chunk));
         }
         drop(mapped);
         self.readback.unmap();

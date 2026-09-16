@@ -1,6 +1,7 @@
 # ryugu-cauchy-gravity
 
 <p align="center">
+  <a href="https://github.com/Tom-Jim/ryugu-cauchy-gravity"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Tom--Jim%2Fryugu--cauchy--gravity-181717?style=flat-square&logo=github&logoColor=white"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-000000?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://bevy.org/"><img alt="Bevy 0.19" src="https://img.shields.io/badge/Bevy-0.19-74c0fc?style=flat-square"></a>
   <a href="https://bun.sh/"><img alt="Bun" src="https://img.shields.io/badge/Bun-runtime-fbf0df?style=flat-square&logo=bun&logoColor=black"></a>
@@ -10,8 +11,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Tom-Jim/ryugu-cauchy-gravity"><img alt="Browse the source on GitHub" src="https://img.shields.io/badge/GITHUB-SOURCE-181717?style=for-the-badge&logo=github&logoColor=white"></a>
   <a href="https://tom-jim.github.io/ryugu-cauchy-gravity/"><img alt="Open the interactive WebGPU demo" src="https://img.shields.io/badge/OPEN_THE_INTERACTIVE_WEBGPU_DEMO-0f766e?style=for-the-badge"></a><br>
-  <sub>Explore all four solvers, switch density models, and inspect the 1 mm failure mode in the browser.</sub>
+  <sub>Browse the source or launch the browser demo and compare all four solvers.</sub>
 </p>
 
 ## Preview
@@ -50,7 +52,7 @@ screen is a difference between solvers and nothing else.
 | **Werner** | Closed-form polyhedral tensor (the ESA reference library) | uniform | host, multithreaded C++ |
 | **Mascon** | Voxel direct sum over 192³ point masses | arbitrary | host, multithreaded C++ |
 | **RT-FP** | Analytic near field plus a directional quadrature of the radial remainder | arbitrary | GPU, WGSL |
-| **Carlson** | Density written as jump surfaces over a cone decomposition, evaluated as a surface integral | piecewise constant | GPU, WGSL |
+| **Carlson** | Density jump surfaces over a star-cone decomposition, evaluated by the polyhedral surface integral | piecewise constant | GPU, WGSL |
 
 ## Results
 
@@ -103,6 +105,27 @@ and its computed field is on average 4.76× larger than RT-FP's on the same face
 A voxel direct sum is simply not defined at a standoff an order of magnitude
 below its own cell size (5.253 m), and nothing about that number is a rendering
 artefact: it is the difference between the two stored records.
+
+### Height sweep
+
+The fixed probe set from `--selftest` compares the Carlson tensor with the RT-FP
+tensor at every height the viewer exposes. It uses 32 mesh vertices per height;
+the error is the Frobenius relative difference between the two tensors.
+
+| Standoff | Carlson vs RT-FP median | worst |
+| --- | --- | --- |
+| 1 mm | 1.05 × 10⁻² | 4.55 × 10⁻² |
+| 1 m | 4.39 × 10⁻³ | 2.46 × 10⁻² |
+| 4 m | 3.28 × 10⁻³ | 2.38 × 10⁻² |
+| 8 m | 2.76 × 10⁻³ | 2.28 × 10⁻² |
+| 16 m | 2.31 × 10⁻³ | 2.14 × 10⁻² |
+| 32 m | 1.76 × 10⁻³ | 1.93 × 10⁻² |
+
+This probe table is deliberately harsher than the full-record table above: its
+fixed vertices include near-edge and near-vertex samples, while the record
+average is taken over all 196,608 faces. The important check is the trend: the
+two formulations remain consistent from 1 mm to 32 m, and neither develops the
+near-field loss of meaning seen in the voxel field.
 
 The practical reading is a standoff rule. A voxel model needs a handful of cells
 between the observation point and the body — for this mesh, roughly 15–25 m at a
@@ -181,6 +204,12 @@ Two honest caveats, both visible in the table above:
   is a fixed, measurable offset that the construction keeps out of the
   constant-density term; it is the reason Carlson's own tail is larger than
   RT-FP's.
+* The shipped **Carlson** path implements the PDF's jump-surface/star-cone
+  reduction. It does **not** implement the symmetric `R_F/R_D/R_J` backend for
+  the general elliptic radial integral. The shipped Cauchy field uses `α = 1`,
+  where that radial integral is elementary, so these records do not exercise
+  `R_F/R_D/R_J`; the name describes the surface-reduction family, not a claim
+  that every special-function branch in the derivation is implemented.
 
 ## Why Carlson and RT-FP
 

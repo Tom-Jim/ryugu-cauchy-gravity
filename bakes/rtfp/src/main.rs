@@ -415,23 +415,23 @@ fn selftest_cross_solver(mesh: &Mesh) -> Result<(), String> {
     // quadrature error against a 1568-direction run is ~8e-5, two orders below the
     // representation error being measured here.
     let dirs = quadrature::directions(288);
-    // Both ends of the slider. The near end is the hard one: a millimetre above a
-    // face, the tensor is dominated by that face, so a cell-level density error is
-    // amplified by the same near-field weighting that makes the voxel direct sum
-    // unusable there.
-    for standoff_mm in [1.0f64, 16_000.0] {
+    // Sweep the slider's useful range. The near end is the hard one: a millimetre
+    // above a face, the tensor is dominated by that face, so a cell-level density
+    // error is amplified by the near-field weighting that also makes the voxel
+    // direct sum unusable there.
+    for standoff_mm in [1.0f64, 1_000.0, 4_000.0, 8_000.0, 16_000.0, 32_000.0] {
         let all = mesh.observation_points(standoff_mm * 1e-3);
         let nv = mesh.vertex_count();
         let sample: Vec<[f64; 3]> = (0..32).map(|i| all[i * nv / 32]).collect();
         let mut errs: Vec<f64> = sample
             .iter()
-            .map(|x| {
+            .map(|x| -> Result<f64, String> {
                 let want = carlson::rtfp_reference(
                     mesh, &tree, &uniform, &density, kernels, x, t_max, &dirs,
-                );
-                rel6(&analytic::hessian6(&faces, *x), &want)
+                )?;
+                Ok(rel6(&analytic::hessian6(&faces, *x), &want))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let worst = errs[errs.len() - 1];
         println!(
@@ -612,7 +612,13 @@ fn selftest_gpu(args: &Args) -> Result<(), String> {
         let mut acc = [0.0f64; 6];
         for (u, w) in &dirs {
             brute.crossings(*p, [-u[0], -u[1], -u[2]], GEOM_EPS_M, t_max, &mut hits);
-            let slots = split::intervals(&hits, inside);
+            let (slots, overflow) = split::intervals(&hits, inside);
+            if overflow {
+                return Err(format!(
+                    "reference ray at {p:?} exceeded {} visible intervals",
+                    split::MAX_INTERVALS
+                ));
+            }
             let s = split::remainder_scalar(kernels, *p, *u, &slots);
             tensor::add_tensor_term(&mut acc, u, G * *w * s);
         }

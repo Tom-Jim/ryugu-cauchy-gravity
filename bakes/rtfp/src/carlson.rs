@@ -509,7 +509,7 @@ pub fn rtfp_reference(
     x: &[f64; 3],
     t_max: f64,
     dirs: &[([f64; 3], f64)],
-) -> [f64; 6] {
+) -> Result<[f64; 6], String> {
     use crate::{geom, split, tensor};
     let mut h = crate::analytic::hessian6(uniform, *x);
     let rho = density.rho(x, DensityMode::Cauchy);
@@ -537,11 +537,17 @@ pub fn rtfp_reference(
             t_max,
             &mut hits,
         );
-        let slots = split::intervals(&hits, inside);
+        let (slots, overflow) = split::intervals(&hits, inside);
+        if overflow {
+            return Err(format!(
+                "RT-FP reference ray at {x:?} exceeded {} visible intervals",
+                split::MAX_INTERVALS
+            ));
+        }
         let s = split::remainder_scalar(kernels, *x, *u, &slots);
         tensor::add_tensor_term(&mut h, u, crate::G * *omega * s);
     }
-    h
+    Ok(h)
 }
 
 /// Append one triangle, flipping two corners when needed so the unit normal

@@ -239,8 +239,9 @@ pub fn face_vertex_indices(mesh: &Mesh) -> Option<Vec<u32>> {
 }
 
 /// Duplicate vertices per face so flat face colors never bleed across shared edges.
-/// Returns (exploded mesh, face indices as 0,1,2, 3,4,5, ...).
-pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
+/// Returns the exploded mesh and its triangle count; vertices remain in face order,
+/// so no second index array has to survive in the viewer.
+pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, usize)> {
     let indices = face_vertex_indices(src)?;
     let Some(VertexAttributeValues::Float32x3(pos)) = src.attribute(Mesh::ATTRIBUTE_POSITION)
     else {
@@ -254,7 +255,6 @@ pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
     let n_corners = indices.len();
     let mut new_pos = Vec::with_capacity(n_corners);
     let mut new_nor = Vec::with_capacity(n_corners);
-    let mut new_idx = Vec::with_capacity(n_corners);
 
     for face in 0..(n_corners / 3) {
         let i0 = indices[face * 3] as usize;
@@ -275,14 +275,13 @@ pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
             let len = (cx * cx + cy * cy + cz * cz).sqrt().max(1e-20);
             [cx / len, cy / len, cz / len]
         };
-        for (k, &vi) in [i0, i1, i2].iter().enumerate() {
+        for vi in [i0, i1, i2] {
             new_pos.push(pos[vi]);
             if let Some(nattr) = normals {
                 new_nor.push(if vi < nattr.len() { nattr[vi] } else { face_n });
             } else {
                 new_nor.push(face_n);
             }
-            new_idx.push((face * 3 + k) as u32);
         }
     }
 
@@ -292,8 +291,7 @@ pub fn explode_mesh_for_flat_faces(src: &Mesh) -> Option<(Mesh, Vec<u32>)> {
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, new_pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, new_nor);
-    mesh.insert_indices(Indices::U32(new_idx.clone()));
-    Some((mesh, new_idx))
+    Some((mesh, n_corners / 3))
 }
 
 pub fn init_gray_colors(mesh: &mut Mesh) -> bool {
@@ -305,21 +303,12 @@ pub fn init_gray_colors(mesh: &mut Mesh) -> bool {
     true
 }
 
-pub fn paint_face_on_colors(
-    colors: &mut [[f32; 4]],
-    indices: &[u32],
-    face: usize,
-    rgba: [f32; 4],
-) -> bool {
-    if face * 3 + 2 >= indices.len() {
+pub fn paint_face_on_colors(colors: &mut [[f32; 4]], face: usize, rgba: [f32; 4]) -> bool {
+    if face * 3 + 2 >= colors.len() {
         return false;
     }
     for k in 0..3 {
-        let vi = indices[face * 3 + k] as usize;
-        if vi >= colors.len() {
-            return false;
-        }
-        colors[vi] = rgba;
+        colors[face * 3 + k] = rgba;
     }
     true
 }
@@ -331,8 +320,8 @@ pub struct BakePaint {
     pub window: DisplayWindow,
     pub painted: Vec<bool>,
     pub queue: VecDeque<u32>,
-    /// Exploded mesh indices (0,1,2, 3,4,5, …) for painting.
-    pub face_indices: Vec<u32>,
+    /// Triangle count of the exploded mesh.
+    pub face_count: usize,
     pub rng: u64,
     /// When true, next paint pass restores the whole mesh to gray (bake restart).
     pub reset_to_gray: bool,

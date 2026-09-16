@@ -374,6 +374,7 @@
     function applyAlgoLabels() {
       const constant = isDensitySelectable && densityMode === "constant";
       algoLabel.textContent = constant ? cfg.shortConstant : cfg.short;
+      algoBtn.textContent = cfg.next;
       panelTitle.textContent = constant ? cfg.titleConstant : cfg.title;
       if (isDensitySelectable) {
         densBtn.hidden = false;

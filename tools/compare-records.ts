@@ -59,7 +59,7 @@ async function read(path: string): Promise<Record> {
   return parse(path, new Uint8Array(await file.arrayBuffer()));
 }
 
-function quantile(sorted: number[], q: number): number {
+function quantile(sorted: Float64Array, q: number): number {
   return sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * q))] ?? Number.NaN;
 }
 
@@ -86,7 +86,9 @@ const b = await read(positional[1]!);
 const n = Math.min(a.total, b.total);
 if (n === 0) throw new Error("nothing to compare");
 
-const rel: number[] = [];
+// Packed storage avoids one boxed JavaScript Number per finite face.
+const rel = new Float64Array(n);
+let count = 0;
 let sumA = 0;
 let sumB = 0;
 let maxA = 0;
@@ -95,28 +97,29 @@ for (let i = 0; i < n; i++) {
   const sa = a.scalars[i]!;
   const sb = b.scalars[i]!;
   if (!Number.isFinite(sa) || !Number.isFinite(sb)) continue;
-  rel.push(Math.abs(sa - sb) / Math.max(Math.abs(sa), Math.abs(sb), 1e-300));
+  rel[count++] = Math.abs(sa - sb) / Math.max(Math.abs(sa), Math.abs(sb), 1e-300);
   sumA += sa;
   sumB += sb;
   maxA = Math.max(maxA, sa);
   maxB = Math.max(maxB, sb);
 }
-if (rel.length === 0) throw new Error("no face is finite in both records");
-rel.sort((x, y) => x - y);
+if (count === 0) throw new Error("no face is finite in both records");
+const sorted = rel.subarray(0, count);
+sorted.sort();
 
 const summary = {
   a: { path: a.path, standoffMm: a.standoffMm, faces: a.total, finite: a.finite },
   b: { path: b.path, standoffMm: b.standoffMm, faces: b.total, finite: b.finite },
-  compared: rel.length,
+  compared: count,
   relEps,
-  overThreshold: rel.filter((r) => r > relEps).length,
-  mean: rel.reduce((s, r) => s + r, 0) / rel.length,
-  median: quantile(rel, 0.5),
-  p90: quantile(rel, 0.9),
-  p99: quantile(rel, 0.99),
-  max: rel[rel.length - 1]!,
-  meanRatio: sumB !== 0 ? sumA / sumB : Number.NaN,
-  maxRatio: maxB !== 0 ? maxA / maxB : Number.NaN,
+  overThreshold: sorted.reduce((total, r) => total + (r > relEps ? 1 : 0), 0),
+  mean: sorted.reduce((s, r) => s + r, 0) / count,
+  median: quantile(sorted, 0.5),
+  p90: quantile(sorted, 0.9),
+  p99: quantile(sorted, 0.99),
+  max: sorted[count - 1]!,
+  aggregateRatio: sumB !== 0 ? sumA / sumB : Number.NaN,
+  maxScalarRatio: maxB !== 0 ? maxA / maxB : Number.NaN,
 };
 
 if (asJson) {
@@ -139,6 +142,7 @@ if (asJson) {
       ` (${((100 * summary.overThreshold) / summary.compared).toFixed(2)} %)`,
   );
   console.log(
-    `  mean ratio a/b ${summary.meanRatio.toFixed(6)} · max ratio ${summary.maxRatio.toFixed(6)}`,
+    `  aggregate a/b ${summary.aggregateRatio.toFixed(6)}` +
+      ` · largest scalar ratio ${summary.maxScalarRatio.toFixed(6)}`,
   );
 }

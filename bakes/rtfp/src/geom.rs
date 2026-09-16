@@ -10,7 +10,7 @@ use crate::bvh::Bvh;
 use crate::mesh::Mesh;
 
 /// Matches `MAX_HITS` in `rays.wgsl`.
-pub const MAX_HITS: usize = 8;
+pub const MAX_HITS: usize = 16;
 
 /// Exact crossings of every triangle of the mesh along `o + t·d`.
 pub struct BruteTracer<'a> {

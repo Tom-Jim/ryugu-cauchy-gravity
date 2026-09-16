@@ -33,7 +33,8 @@ struct Dir {
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
-// Four (r₀, r₁) slots per (point, direction), written by `rays.wgsl`.
+// Visible (r₀, r₁) slots per (point, direction), written by `rays.wgsl`.
+const MAX_INTERVALS: u32 = 8u;
 @group(0) @binding(1) var<storage, read> ivals: array<vec2<f32>>;
 // Visible-interval count per (point, direction).
 @group(0) @binding(2) var<storage, read> counts: array<u32>;
@@ -77,11 +78,11 @@ fn remainder(@builtin(global_invocation_id) gid: vec3<u32>) {
             let b = dot(p, u);
             let d = sqrt(max(1.0 / s2 + p2 - b * b, 1e-30));
             var jk = 0.0;
-            for (var t = 0u; t < 4u; t = t + 1u) {
+            for (var t = 0u; t < MAX_INTERVALS; t = t + 1u) {
                 if (t >= cnt) {
                     break;
                 }
-                let slot = ivals[idx * 4u + t];
+                let slot = ivals[idx * MAX_INTERVALS + t];
                 let r0 = slot.x;
                 let r1 = slot.y;
                 if (r1 <= r0) {

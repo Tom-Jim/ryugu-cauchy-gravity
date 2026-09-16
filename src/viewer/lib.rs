@@ -185,14 +185,14 @@ fn prepare_paint_target(
     };
     // Explode so each face keeps a flat color (indexed GLB otherwise bleeds
     // neighbors). The pre-explode index buffer is no longer needed.
-    let Some((mut mesh, indices)) = explode_mesh_for_flat_faces(src) else {
+    let Some((mut mesh, face_count)) = explode_mesh_for_flat_faces(src) else {
         return;
     };
     mesh.remove_attribute(Mesh::ATTRIBUTE_UV_0);
     if !init_gray_colors(&mut mesh) {
         return;
     }
-    paint.face_indices = indices;
+    paint.face_count = face_count;
     let handle = meshes.add(mesh);
     let mat = materials.add(StandardMaterial {
         base_color: Color::WHITE,
@@ -259,11 +259,15 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
         paint.last_finite = 0;
     }
 
+    // A full recolor replaces the queue with every face below, so collecting a
+    // second list of "new" indices first is wasted allocation on every algorithm
+    // switch. Compute the decision before walking the snapshot.
+    let full_recolor = !same_snapshot || finite_file != paint.last_finite;
     let mut newly = Vec::new();
     for (f, &s) in face_scalar.iter().enumerate() {
         if s.is_finite() {
             let was = paint.scalars.get(f).copied().unwrap_or(f32::NAN);
-            if !paint.painted[f] && !was.is_finite() {
+            if !full_recolor && !paint.painted[f] && !was.is_finite() {
                 newly.push(f as u32);
             }
             paint.scalars[f] = s;
@@ -277,7 +281,6 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
     // Recompute the percentile stretch whenever the record content changes. Four
     // completed algorithms can have the same finite count while every scalar
     // differs, so finite count alone is not a record identity.
-    let full_recolor = !same_snapshot || finite_file != paint.last_finite;
     if full_recolor {
         // Same window rule as the RT-FP path, derived from the raw face scalars:
         // equal values therefore map to equal colours in every viewer.
@@ -331,7 +334,7 @@ fn paint_faces_from_queue(
             }
         }
 
-        if paint.queue.is_empty() || paint.face_indices.is_empty() || !range_ok {
+        if paint.queue.is_empty() || paint.face_count == 0 || !range_ok {
             continue;
         }
 
@@ -351,7 +354,7 @@ fn paint_faces_from_queue(
             let Some(rgba) = colormap_scalar(&paint.window, s) else {
                 continue;
             };
-            if paint_face_on_colors(colors, &paint.face_indices, fi, rgba) {
+            if paint_face_on_colors(colors, fi, rgba) {
                 paint.painted[fi] = true;
                 n += 1;
             }

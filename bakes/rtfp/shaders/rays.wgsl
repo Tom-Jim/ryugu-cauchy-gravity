@@ -1,7 +1,7 @@
 // Software BVH ray tracing for the RT-FP deviation integral.
 //
 // One invocation per (observation point, direction): walk the flat BVH built by
-// `src/bvh.rs`, collect the first `MAX_HITS` triangle crossings along `x − R u`,
+// `src/bvh.rs`, collect up to `MAX_HITS` triangle crossings along `x − R u`,
 // and emit the visible `(r₀, r₁)` intervals the remainder shader integrates.
 // A second entry point, `inside_probe`, runs one `+X` ray per point to get the
 // crossing parity that decides whether the first interval starts at the point
@@ -36,10 +36,14 @@ struct Globals {
 @group(0) @binding(6) var<storage, read> dirs: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read_write> out_counts: array<u32>;
 @group(0) @binding(8) var<storage, read_write> out_ivals: array<vec2<f32>>;
-@group(0) @binding(9) var<storage, read_write> out_inside: array<u32>;
+// One inside flag per point, followed by one atomic overflow counter at
+// index `n_points`. The counter catches both dropped crossings and intervals
+// that do not fit in `MAX_INTERVALS`, so the bake fails instead of silently
+// integrating an incomplete ray.
+@group(0) @binding(9) var<storage, read_write> out_inside_overflow: array<atomic<u32>>;
 
-const MAX_HITS: u32 = 8u;
-const MAX_INTERVALS: u32 = 4u;
+const MAX_HITS: u32 = 16u;
+const MAX_INTERVALS: u32 = 8u;
 const STACK: u32 = 64u;
 
 /// Möller–Trumbore. Returns the crossing distance, or −1 when the ray misses.
@@ -85,6 +89,7 @@ fn slab_hit(node: u32, o: vec3<f32>, inv_d: vec3<f32>, t_lo: f32, t_hi: f32) -> 
 fn insert_hit(hits: ptr<function, array<f32, MAX_HITS>>, n: ptr<function, u32>, t: f32) {
     var i = *n;
     if (i >= MAX_HITS) {
+        atomicAdd(&out_inside_overflow[g.n_points], 1u);
         i = MAX_HITS - 1u;
     } else {
         *n = *n + 1u;
@@ -159,7 +164,7 @@ fn inside_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hits: array<f32, MAX_HITS>;
     var n_hits: u32;
     trace(points[pid].xyz, vec3<f32>(1.0, 0.0, 0.0), &hits, &n_hits);
-    out_inside[pid] = n_hits % 2u;
+    atomicStore(&out_inside_overflow[pid], n_hits % 2u);
 }
 
 /// Visible `(r₀, r₁)` intervals per (point, direction).
@@ -176,7 +181,7 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
     var n_hits: u32;
     trace(x, -u, &hits, &n_hits);
 
-    let inside = out_inside[pid] == 1u;
+    let inside = atomicLoad(&out_inside_overflow[pid]) == 1u;
     var slots: array<vec2<f32>, MAX_INTERVALS>;
     var count = 0u;
     if (inside) {
@@ -203,6 +208,13 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
             count = count + 1u;
             i = i + 2u;
         }
+    }
+    var needed = n_hits / 2u;
+    if (inside && n_hits > 0u) {
+        needed = 1u + (n_hits - 1u) / 2u;
+    }
+    if (needed > MAX_INTERVALS) {
+        atomicAdd(&out_inside_overflow[g.n_points], needed - MAX_INTERVALS);
     }
     out_counts[idx] = count;
     for (var k = 0u; k < MAX_INTERVALS; k = k + 1u) {

@@ -28,7 +28,7 @@
 use crate::density::KernelSi;
 
 /// Interval slots per (point, direction); mirrors `MAX_INTERVALS` in `rays.wgsl`.
-pub const MAX_INTERVALS: usize = 4;
+pub const MAX_INTERVALS: usize = 8;
 
 /// `D(R) = A − 2σ²bR + σ²R²`.
 #[inline]
@@ -37,13 +37,17 @@ fn d_of(r: f64, a: f64, b: f64, s2: f64) -> f64 {
 }
 
 /// Visible intervals of the ray `x − R u`, as `(r₀, r₁)` pairs.
+///
+/// The returned flag is true when the ray had more intervals than the fixed GPU
+/// capacity. The bake reports that condition from `rays.wgsl`; this CPU mirror
+/// exposes it so reference checks cannot silently truncate either.
 #[inline]
-pub fn intervals(hits: &[f64], inside: bool) -> [Option<(f64, f64)>; MAX_INTERVALS] {
+pub fn intervals(hits: &[f64], inside: bool) -> ([Option<(f64, f64)>; MAX_INTERVALS], bool) {
     let mut out = [None; MAX_INTERVALS];
     let mut n = 0usize;
     if inside {
         if hits.is_empty() {
-            return out;
+            return (out, false);
         }
         out[n] = Some((0.0, hits[0]));
         n += 1;
@@ -61,7 +65,12 @@ pub fn intervals(hits: &[f64], inside: bool) -> [Option<(f64, f64)>; MAX_INTERVA
             i += 2;
         }
     }
-    out
+    let needed = if inside && !hits.is_empty() {
+        1 + (hits.len() - 1) / 2
+    } else {
+        hits.len() / 2
+    };
+    (out, needed > MAX_INTERVALS)
 }
 
 /// `Σ_k w_k R_k(u)` for one direction: the radial integrals with their log part
@@ -105,4 +114,20 @@ pub fn remainder_scalar(
         total += k.w * jk;
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{intervals, MAX_INTERVALS};
+
+    #[test]
+    fn interval_capacity_is_explicit() {
+        let hits: Vec<f64> = (1..=2 * MAX_INTERVALS as i32 + 2).map(f64::from).collect();
+        let (slots, overflow) = intervals(&hits, false);
+        assert_eq!(slots.iter().flatten().count(), MAX_INTERVALS);
+        assert!(overflow);
+
+        let (_, inside_overflow) = intervals(&hits, true);
+        assert!(inside_overflow);
+    }
 }
