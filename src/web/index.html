@@ -1441,9 +1441,9 @@
         await waitForRenderedFrames();
         lastPulledKey = statusRecordKey(initialStatus);
         if (STATIC_DEMO) {
-          const { LivePreview } = await import("./src/web/live_preview.js?v=3");
+          const { LivePreview } = await import("./src/web/live_preview.js?v=4");
           livePreview = new LivePreview({
-            sourceUrl: "./assets/live/preview_sources.bin?v=3",
+            sourceUrl: "./assets/live/preview_sources.bin?v=4",
           });
           await livePreview.init();
         }

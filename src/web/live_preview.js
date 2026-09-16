@@ -631,7 +631,7 @@ export class LivePreview {
   }
 
   async init() {
-    const worker = new Worker(new URL("./live_preview.js", import.meta.url), {
+    const worker = new Worker(new URL("./live_preview.js?v=4", import.meta.url), {
       type: "module",
       name: "ryugu-full-surface",
     });
