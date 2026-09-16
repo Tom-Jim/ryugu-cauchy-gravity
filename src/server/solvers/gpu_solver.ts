@@ -41,7 +41,7 @@ export const DEFAULT_OBJ =
 
 /** Face count of the Ryugu observation mesh, and the record's fixed size. */
 export const FACE_COUNT = 196608;
-const CHECKPOINT_HEADER_BYTES = 28;
+const CHECKPOINT_HEADER_BYTES = 36;
 const MAX_CAPTURED_LOG_CHARS = 512 * 1024;
 const LOG_FLUSH_INTERVAL_MS = 100;
 const VERTEX_PROGRESS_START = 1;
@@ -125,6 +125,10 @@ function facePercent(current: number, total: number) {
   if (total <= 0) return FACE_PROGRESS_START;
   const ratio = Math.max(0, Math.min(1, current / total));
   return FACE_PROGRESS_START + (FACE_PROGRESS_END - FACE_PROGRESS_START) * ratio;
+}
+
+function sameStandoff(a: number, b: number) {
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-3;
 }
 
 /** Build a controller bound to one `SolverSpec`. */
@@ -313,32 +317,47 @@ export function createGpuSolver(spec: SolverSpec) {
 
   function vertexCheckpointFor(
     density: DensityMode,
-  ): { exists: boolean; current: number; total: number } {
+  ): { exists: boolean; current: number; total: number; standoffMm: number } {
     let fd: number | null = null;
     let buf: Buffer;
     try {
       fd = openSync(checkpointPath(density), "r");
       buf = Buffer.allocUnsafe(CHECKPOINT_HEADER_BYTES);
       if (readSync(fd, buf, 0, CHECKPOINT_HEADER_BYTES, 0) < CHECKPOINT_HEADER_BYTES) {
-        return { exists: false, current: 0, total: 0 };
+        return { exists: false, current: 0, total: 0, standoffMm: 0 };
       }
     } catch {
-      return { exists: false, current: 0, total: 0 };
+      return { exists: false, current: 0, total: 0, standoffMm: 0 };
     } finally {
       if (fd !== null) closeSync(fd);
     }
     if (buf.subarray(0, 8).toString("ascii") !== "RYVHCP01") {
-      return { exists: false, current: 0, total: 0 };
+      return { exists: false, current: 0, total: 0, standoffMm: 0 };
+    }
+    if (buf.readUInt32LE(8) !== 2) {
+      return { exists: false, current: 0, total: 0, standoffMm: 0 };
     }
     const total = Number(buf.readBigUInt64LE(12));
     const current = Number(buf.readBigUInt64LE(20));
-    if (!Number.isSafeInteger(total) || !Number.isSafeInteger(current) || current > total) {
-      return { exists: false, current: 0, total: 0 };
+    const standoffMm = buf.readDoubleLE(28);
+    if (
+      !Number.isSafeInteger(total)
+      || !Number.isSafeInteger(current)
+      || current > total
+      || !Number.isFinite(standoffMm)
+      || standoffMm <= 0
+    ) {
+      return { exists: false, current: 0, total: 0, standoffMm: 0 };
     }
-    return { exists: current > 0, current, total };
+    return { exists: current > 0, current, total, standoffMm };
   }
 
-  function vertexCheckpoint(): { exists: boolean; current: number; total: number } {
+  function vertexCheckpoint(): {
+    exists: boolean;
+    current: number;
+    total: number;
+    standoffMm: number;
+  } {
     return vertexCheckpointFor(densityMode);
   }
 
@@ -395,6 +414,7 @@ export function createGpuSolver(spec: SolverSpec) {
     const vertex = vertexCheckpoint();
     const running = isRunning();
     if (cp.standoffMm > 0) standoffMm = cp.standoffMm;
+    else if (vertex.standoffMm > 0) standoffMm = vertex.standoffMm;
     // Never advertise resume while a bake process is alive.
     const vertexResumable = vertex.exists && vertex.current < vertex.total;
     status.canResume = running ? false : cp.canResume || vertexResumable;
@@ -562,9 +582,9 @@ export function createGpuSolver(spec: SolverSpec) {
     }
     const obj = DEFAULT_OBJ;
     if (!existsSync(obj)) return fail("Mesh missing", `missing OBJ: ${obj}`);
-    // A resume continues the requested record's density mode and height; a
-    // restart takes both from the UI. An unsupported density is an error rather
-    // than a silent fallback to the default model.
+    // Resume and restart both use the requested density and height. A resume
+    // only reuses a checkpoint produced on the exact same observation surface.
+    // An unsupported density is an error rather than a silent fallback.
     const requested = requestedDensity ?? densityMode;
     if (requestedDensity !== undefined && !(requestedDensity in spec.outByMode)) {
       return fail(
@@ -583,16 +603,21 @@ export function createGpuSolver(spec: SolverSpec) {
     }
     const nextOutPath = recordPath(nextDensity);
     const record = recordSummary(readFileOrNull(nextOutPath) ?? Buffer.alloc(0));
-    const usedStandoffMm =
-      mode === "resume" && record.standoffMm > 0
-        ? record.standoffMm
-        : clampStandoffMm(requestedStandoffMm ?? standoffMm);
+    const vertex = vertexCheckpointFor(nextDensity);
+    const savedStandoffMm = record.standoffMm > 0 ? record.standoffMm : vertex.standoffMm;
+    const usedStandoffMm = clampStandoffMm(requestedStandoffMm ?? standoffMm);
     standoffMm = usedStandoffMm;
     densityMode = nextDensity;
 
     if (mode === "resume") {
+      if (savedStandoffMm > 0 && !sameStandoff(savedStandoffMm, usedStandoffMm)) {
+        return fail(
+          "Observation height changed",
+          `saved result is at ${savedStandoffMm} mm; recompute at ${usedStandoffMm} mm`,
+          409,
+        );
+      }
       const cp = record;
-      const vertex = vertexCheckpoint();
       const resumable = (cp.exists && cp.current > 0 && !cp.done)
         || (vertex.exists && vertex.current > 0 && vertex.current <= vertex.total);
       if (!resumable && !cp.done) {

@@ -281,12 +281,23 @@ export async function startWernerBake(
     return corsJson(payload(), 500);
   }
 
-  // A resume continues the record's own surface; a restart uses the slider.
+  // A resume only reuses a record produced on the requested surface.
   const recordMm = summary();
-  const usedStandoffMm =
-    mode === "resume" && recordMm.standoffMm > 0
-      ? recordMm.standoffMm
-      : clampStandoffMm(requestedStandoffMm ?? standoffMm);
+  const usedStandoffMm = clampStandoffMm(requestedStandoffMm ?? standoffMm);
+  if (
+    mode === "resume"
+    && recordMm.standoffMm > 0
+    && Math.abs(recordMm.standoffMm - usedStandoffMm) > 1e-3
+  ) {
+    status = {
+      ...status,
+      state: "error",
+      message: "Observation height changed",
+      error: `saved result is at ${recordMm.standoffMm} mm; recompute at ${usedStandoffMm} mm`,
+      canResume: false,
+    };
+    return corsJson(payload(), 409);
+  }
   standoffMm = usedStandoffMm;
 
   if (mode === "resume") {

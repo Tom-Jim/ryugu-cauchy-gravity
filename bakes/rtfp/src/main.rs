@@ -992,7 +992,7 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
     // quantity — it was worth 1.9 % median against the Werner record.
     let mut vertex_h = vec![[f64::NAN; 6]; nv];
     let resumed_vertices = if args.resume {
-        match checkpoint::load(&args.checkpoint, nv)
+        match checkpoint::load(&args.checkpoint, nv, args.standoff_mm)
             .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?
         {
             Some(saved) => {
@@ -1035,7 +1035,7 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
                 vertex_h[vi] = h;
             }
             if (block + 1) % CHECKPOINT_BLOCKS == 0 || hi == nv {
-                checkpoint::save(&args.checkpoint, &vertex_h, hi)
+                checkpoint::save(&args.checkpoint, &vertex_h, hi, args.standoff_mm)
                     .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?;
             }
             println!("PROGRESS_R {hi} {nv}");
@@ -1208,7 +1208,7 @@ fn run_carlson(args: &Args) -> Result<(), String> {
     std::io::Write::flush(&mut std::io::stdout()).ok();
     let mut vertex_h = vec![[f64::NAN; 6]; nv];
     let resumed_vertices = if args.resume {
-        match checkpoint::load(&args.checkpoint, nv)
+        match checkpoint::load(&args.checkpoint, nv, args.standoff_mm)
             .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?
         {
             Some(saved) => {
@@ -1230,7 +1230,7 @@ fn run_carlson(args: &Args) -> Result<(), String> {
         }
         scene.carlson_surface_block(lo, hi, &mut vertex_h)?;
         if (block + 1) % CHECKPOINT_BLOCKS == 0 || hi == nv {
-            checkpoint::save(&args.checkpoint, &vertex_h, hi)
+            checkpoint::save(&args.checkpoint, &vertex_h, hi, args.standoff_mm)
                 .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?;
         }
         println!("PROGRESS_R {hi} {nv}");

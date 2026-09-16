@@ -538,13 +538,26 @@ export async function startMasconBake(
     return corsJson(masconPayload(), 500);
   }
 
-  // Observation height: a resume has to continue the record's own surface, a
-  // restart starts at the height the UI slider asked for (1 mm – 32 m).
+  // Observation height: a resume only reuses a checkpoint produced on the
+  // requested surface. A restart starts at the UI height (1 mm – 32 m).
   const recordMm = readMasconCheckpoint();
-  const usedStandoffMm =
-    mode === "resume" && recordMm.standoffMm > 0
-      ? recordMm.standoffMm
-      : clampStandoffMm(requestedStandoffMm ?? masconStandoffMm);
+  const usedStandoffMm = clampStandoffMm(requestedStandoffMm ?? masconStandoffMm);
+  if (
+    mode === "resume"
+    && recordMm.standoffMm > 0
+    && Math.abs(recordMm.standoffMm - usedStandoffMm) > 1e-3
+  ) {
+    masconStatus = {
+      state: "error",
+      current: recordMm.current,
+      total: recordMm.total,
+      percent: 0,
+      message: "Observation height changed",
+      error: `saved result is at ${recordMm.standoffMm} mm; recompute at ${usedStandoffMm} mm`,
+      canResume: false,
+    };
+    return corsJson(masconPayload(), 409);
+  }
   masconStandoffMm = usedStandoffMm;
 
   if (mode === "resume") {

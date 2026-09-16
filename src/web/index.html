@@ -336,9 +336,6 @@
     const STANDOFF_DEFAULT_MM = 16000;
     let standoffMm = STANDOFF_DEFAULT_MM;
     let standoffDragging = false;
-    // After a manual height change the displayed result belongs to the previous
-    // surface until the queued computation finishes.
-    let standoffHoldUntil = 0;
 
     const clampStandoff = (mm) => {
       const v = Number(mm);
@@ -382,11 +379,16 @@
       ));
     }
 
-    function setStandoffUi(mm) {
+    function setStandoffUi(mm, { persist = true } = {}) {
       standoffMm = clampStandoff(mm);
       const pos = String(mmToPos(standoffMm));
       if (standoffRange.value !== pos) standoffRange.value = pos;
       standoffVal.textContent = fmtMm(standoffMm);
+      if (persist) {
+        const u = new URL(location.href);
+        u.searchParams.set("standoff", String(standoffMm));
+        history.replaceState(null, "", u.toString());
+      }
     }
 
     function setStandoffRecordLabel(mm) {
@@ -397,20 +399,8 @@
           : "";
     }
 
-    /**
-     * Adopt the height reported by the current result, but stay quiet for a
-     * moment after a manual slider change so stale status cannot drag it back.
-     */
-    function syncStandoffFromRecord(mm) {
-      const v = Number(mm);
-      if (standoffDragging || Date.now() < standoffHoldUntil) return;
-      if (!Number.isFinite(v) || v < STANDOFF_MIN_MM || v > STANDOFF_MAX_MM) return;
-      if (Math.abs(v - standoffMm) < 1e-6) return;
-      setStandoffUi(v);
-    }
-
     function syncStandoffRecordLabel(mm) {
-      if (standoffDragging || Date.now() < standoffHoldUntil) return;
+      if (standoffDragging) return;
       setStandoffRecordLabel(mm);
     }
 
@@ -506,7 +496,6 @@
      * must never let a late response from the previous record repaint this one.
      */
     let recordGeneration = 0;
-    let algoSwitching = false;
     let statusAbort = null;
     let pullAbort = null;
     let pullGeneration = -1;
@@ -576,55 +565,56 @@
       return new Uint8Array(await res.arrayBuffer());
     }
 
-    async function selectAlgorithm(next) {
-      if (!ALGOS[next] || next === algo || algoSwitching) return;
+    function selectAlgorithm(next) {
+      if (!ALGOS[next] || next === algo) return;
 
-      algoSwitching = true;
-      algoBtn.disabled = true;
       recordGeneration++;
       previewGeneration++;
       previewTarget = null;
       previewAbort?.abort();
-      try {
-        algo = next;
-        cfg = ALGOS[next];
-        isDensitySelectable = Array.isArray(cfg.densityModes) && cfg.densityModes.length > 1;
-        bakeApi = cfg.api;
-        densityMode = densitySelections.get(next) ?? cfg.defaultDensity ?? "cauchy";
-        compareKey = "";
-        window.__bakeScalarStats = null;
-        compareEl.hidden = !cfg.compare;
-        compareEl.textContent = "";
+      algo = next;
+      cfg = ALGOS[next];
+      isDensitySelectable = Array.isArray(cfg.densityModes) && cfg.densityModes.length > 1;
+      bakeApi = cfg.api;
+      densityMode = densitySelections.get(next) ?? cfg.defaultDensity ?? "cauchy";
+      compareKey = "";
+      window.__bakeScalarStats = null;
+      compareEl.hidden = !cfg.compare;
+      compareEl.textContent = "";
 
-        localStorage.setItem(ALGO_KEY, algo);
-        const u = new URL(location.href);
-        u.searchParams.set("algo", algo);
-        u.searchParams.delete("fresh");
-        // Keep one browser-history entry: Back leaves the viewer instead of
-        // restoring the previous algorithm and creating another WebGPU context.
-        history.replaceState(null, "", u.toString());
+      localStorage.setItem(ALGO_KEY, algo);
+      const u = new URL(location.href);
+      u.searchParams.set("algo", algo);
+      u.searchParams.delete("fresh");
+      // Keep one browser-history entry: Back leaves the viewer instead of
+      // restoring the previous algorithm and creating another WebGPU context.
+      history.replaceState(null, "", u.toString());
 
-        applyAlgoLabels();
-        statusEl.textContent = `Loading ${cfg.name}…`;
+      applyAlgoLabels();
+      statusEl.textContent = `Loading ${cfg.name}…`;
 
-        if (STATIC_DEMO) {
-          await requestStaticCompute(standoffMm, { preserveWindow: false });
-        } else {
-          await pollStatus();
-        }
-      } finally {
-        algoSwitching = false;
-        algoBtn.disabled = false;
+      if (STATIC_DEMO) {
+        void requestStaticCompute(standoffMm, { preserveWindow: false });
+      } else {
+        void activateCurrentSelection(recordGeneration);
       }
     }
 
     function switchAlgo() {
       const i = ALGO_ORDER.indexOf(algo);
       const next = ALGO_ORDER[(i + 1) % ALGO_ORDER.length];
-      void selectAlgorithm(next);
+      selectAlgorithm(next);
     }
 
-    setStandoffUi(STANDOFF_DEFAULT_MM);
+    const startupParams = new URLSearchParams(location.search);
+    const startupStandoffMm = Number(startupParams.get("standoff"));
+    const hasStartupStandoff =
+      Number.isFinite(startupStandoffMm)
+      && startupStandoffMm >= STANDOFF_MIN_MM
+      && startupStandoffMm <= STANDOFF_MAX_MM;
+    setStandoffUi(hasStartupStandoff ? startupStandoffMm : STANDOFF_DEFAULT_MM, {
+      persist: false,
+    });
     algoLabel.textContent = algoShort();
     algoBtn.textContent = cfg.next;
     algoBtn.addEventListener("click", switchAlgo);
@@ -731,8 +721,8 @@
       if (s.total > 0) line += ` · ${pct.toFixed(1)}%`;
       if (s.error) line += ` · ${s.error}`;
       if (Number.isFinite(Number(s.standoffMm))) {
-        syncStandoffRecordLabel(Number(s.standoffMm));
-        syncStandoffFromRecord(Number(s.standoffMm));
+        const resultMm = Number(s.standoffMm);
+        syncStandoffRecordLabel(resultMm);
       }
       if (window.__bakeScalarStats) {
         const st = window.__bakeScalarStats;
@@ -1240,7 +1230,8 @@
       if (STATIC_DEMO) {
         void requestStaticCompute(standoffMm, { preserveWindow: false });
       } else {
-        startBake("restart");
+        recordGeneration++;
+        void activateCurrentSelection(recordGeneration);
       }
     }
 
@@ -1250,7 +1241,6 @@
     });
     standoffRange.addEventListener("change", () => {
       standoffDragging = false;
-      standoffHoldUntil = Date.now() + 4000;
       applyStandoff(standoffMm);
     });
 
@@ -1457,6 +1447,15 @@
       if (!wasmViewer || generation !== recordGeneration) return;
       // Partial checkpoints describe computation progress, not renderable data.
       if (s.done !== true) return;
+      if (!sameStandoff(Number(s.standoffMm), standoffMm)) {
+        resetModelToGray();
+        setBarPercent(0);
+        hideComputeIndicator();
+        statusEl.textContent =
+          `Temporary result is at ${fmtMm(Number(s.standoffMm))}; `
+          + `${fmtMm(standoffMm)} requires recomputation.`;
+        return;
+      }
       const key = statusRecordKey(s);
       if (!key || key === lastPulledKey) return;
       try {
@@ -1476,6 +1475,34 @@
         hideComputeIndicator();
         statusEl.textContent = `record read failed: ${e}`;
       }
+    }
+
+    /**
+     * Reuse the selected algorithm only when its temporary result belongs to
+     * the current height. A different height (or no result) starts a fresh run;
+     * a partial run on this exact height resumes from its checkpoint.
+     */
+    async function activateCurrentSelection(generation = recordGeneration) {
+      if (STATIC_DEMO) return;
+      const cached = latestResultFor(algo, densityMode);
+      if (cached && sameStandoff(cached.standoffMm, standoffMm)) {
+        await renderCompletedResult(cached, {
+          preserveWindow: false,
+          generation,
+          message: `Temporary result · ${fmtMm(cached.standoffMm)}`,
+        });
+        return;
+      }
+      const s = await pollStatus();
+      if (!s || generation !== recordGeneration) return;
+      if (sameStandoff(Number(s.standoffMm), standoffMm)) {
+        if (s.done || s.state === "running") return;
+        if (s.canResume) {
+          await startBake("resume");
+          return;
+        }
+      }
+      await startBake("restart");
     }
 
     async function pullBakeIntoWasm(
@@ -1530,8 +1557,8 @@
             message: `Temporary result · ${fmtMm(result.standoffMm)}`,
           });
         } else {
-          await pullBakeIntoWasm(wasmViewer, recordGeneration, "", true);
-          await pollStatus();
+          recordGeneration++;
+          await activateCurrentSelection(recordGeneration);
         }
       } finally {
         reloadBtn.disabled = false;
@@ -1543,11 +1570,11 @@
       recordGeneration++;
       applyAlgoLabels();
       compareKey = "";
-      statusEl.textContent = `Switched to ${densityLabel(densityMode)} density, recomputing…`;
+      statusEl.textContent = `Switched to ${densityLabel(densityMode)} density…`;
       if (STATIC_DEMO) {
         void requestStaticCompute(standoffMm, { preserveWindow: true });
       } else {
-        startBake("restart");
+        void activateCurrentSelection(recordGeneration);
       }
     });
 
@@ -1569,24 +1596,16 @@
       show("WebGPU is required (navigator.gpu is unavailable in this browser).");
     } else {
       try {
-        // Observation height for this session: an explicit ?standoff= wins,
-        // otherwise the shared default. The hosted viewer has no packaged
-        // record whose height could override this.
-        const urlStandoff = Number(new URLSearchParams(location.search).get("standoff"));
-        if (
-          Number.isFinite(urlStandoff)
-          && urlStandoff >= STANDOFF_MIN_MM
-          && urlStandoff <= STANDOFF_MAX_MM
-        ) {
-          setStandoffUi(urlStandoff);
-        }
+        const initialMatchesHeight = !STATIC_DEMO
+          && initialStatus?.done
+          && sameStandoff(Number(initialStatus.standoffMm), standoffMm);
         const wasm = await import("./pkg/ryugu_cauchy_gravity.js");
         wasmRuntime = await wasm.default({
           module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm",
         });
         wasmViewer = wasm;
         let bakeBytes = new Uint8Array(28);
-        if (!STATIC_DEMO && initialStatus?.done) {
+        if (initialMatchesHeight) {
           try {
             bakeBytes = await loadRecordBytes(recordAsset());
           } catch {
@@ -1595,17 +1614,24 @@
         }
         wasm.run_with_bake(bakeBytes);
         await waitForRenderedFrames();
-        const initialParsed = !STATIC_DEMO && initialStatus?.done
+        const initialParsed = initialMatchesHeight
           ? parseFaceScalars(bakeBytes)
           : null;
         if (initialParsed) {
           rememberLatestResult(bakeBytes, initialParsed, previewSourceSet());
         }
-        lastPulledKey = statusRecordKey(initialStatus);
-        if (!STATIC_DEMO && initialStatus?.done) {
+        lastPulledKey = initialMatchesHeight ? statusRecordKey(initialStatus) : "";
+        if (initialMatchesHeight) {
           await refreshBakeScalarStats(initialParsed);
           renderStatus(initialStatus);
           hideComputeIndicator();
+        } else if (!STATIC_DEMO && initialStatus?.done && hasStartupStandoff) {
+          resetModelToGray();
+          setBarPercent(0);
+          statusEl.textContent =
+            `Temporary result is at ${fmtMm(Number(initialStatus.standoffMm))}; `
+            + `${fmtMm(standoffMm)} requires recomputation.`;
+          void activateCurrentSelection(recordGeneration);
         } else if (STATIC_DEMO) {
           setBarPercent(0);
           statusEl.textContent =
