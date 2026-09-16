@@ -12,6 +12,11 @@ pub struct BakedFaces {
     pub face_scalar: Vec<f32>,
 }
 
+pub struct PendingBake {
+    pub baked: Result<Vec<f32>, String>,
+    pub preserve_window: bool,
+}
+
 /// Parse an RHGF v5 face record: a 28-byte header
 /// (`magic, version, n_faces, n_done, standoff_mm, s_min, s_max`) followed by one
 /// `f32` per face, `NaN` until the bake reaches that face.
@@ -44,18 +49,29 @@ pub fn parse_bake(bytes: &[u8]) -> Result<BakedFaces, String> {
     Ok(BakedFaces { face_scalar })
 }
 
-static PENDING_BAKE: Mutex<Option<Result<Vec<f32>, String>>> = Mutex::new(None);
+static PENDING_BAKE: Mutex<Option<PendingBake>> = Mutex::new(None);
 
 pub fn push_bake_bytes(bytes: &[u8]) {
+    push_bake_bytes_with_window(bytes, false);
+}
+
+pub fn push_bake_bytes_preserving_window(bytes: &[u8]) {
+    push_bake_bytes_with_window(bytes, true);
+}
+
+fn push_bake_bytes_with_window(bytes: &[u8], preserve_window: bool) {
     // Parse at the WASM boundary so only one face-scalar allocation survives
     // into the next frame; retaining the raw bytes as well doubled the peak.
     let parsed = parse_bake(bytes).map(|baked| baked.face_scalar);
     if let Ok(mut g) = PENDING_BAKE.lock() {
-        *g = Some(parsed);
+        *g = Some(PendingBake {
+            baked: parsed,
+            preserve_window,
+        });
     }
 }
 
-pub fn take_pending_bake() -> Option<Result<Vec<f32>, String>> {
+pub fn take_pending_bake() -> Option<PendingBake> {
     PENDING_BAKE.lock().ok().and_then(|mut g| g.take())
 }
 

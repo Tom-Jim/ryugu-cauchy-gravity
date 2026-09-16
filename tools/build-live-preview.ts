@@ -15,6 +15,7 @@ const outDir = join(root, "assets/live");
 
 type Vec3 = [number, number, number];
 type Kernel = { c: Vec3; sigma: number; w: number; alpha: number };
+type Triangle = { a: Vec3; b: Vec3; c: Vec3; center: Vec3; normal: Vec3; area: number };
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a: Vec3, b: Vec3): Vec3 => [
@@ -26,7 +27,7 @@ const length = (a: Vec3) => Math.hypot(a[0], a[1], a[2]);
 
 function parseObj(text: string) {
   const verts: Vec3[] = [];
-  const faces: { center: Vec3; normal: Vec3 }[] = [];
+  const faces: Triangle[] = [];
   for (const line of text.split("\n")) {
     if (line.startsWith("v ")) {
       const p = line.trim().split(/\s+/);
@@ -50,8 +51,16 @@ function parseObj(text: string) {
       (a[2] + b[2] + c[2]) / 3,
     ];
     const n = cross(sub(b, a), sub(c, a));
-    const l = Math.max(length(n), 1e-20);
-    faces.push({ center, normal: [n[0] / l, n[1] / l, n[2] / l] });
+    const doubleArea = length(n);
+    const l = Math.max(doubleArea, 1e-20);
+    faces.push({
+      a,
+      b,
+      c,
+      center,
+      normal: [n[0] / l, n[1] / l, n[2] / l],
+      area: 0.5 * doubleArea,
+    });
   }
   return { verts, faces };
 }
@@ -77,88 +86,27 @@ function parseKernels(path: string): Kernel[] {
   return kernels;
 }
 
-function rng(seed: number) {
-  let state = seed >>> 0;
-  return () => {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    return (state >>> 0) / 4294967296;
-  };
+function densityAt(kernels: Kernel[], point: Vec3) {
+  let density = 0;
+  for (const kernel of kernels) {
+    const dx = point[0] - kernel.c[0];
+    const dy = point[1] - kernel.c[1];
+    const dz = point[2] - kernel.c[2];
+    const r2 = dx * dx + dy * dy + dz * dz;
+    density += kernel.w / Math.pow(1 + kernel.sigma * kernel.sigma * r2, kernel.alpha);
+  }
+  return density;
 }
 
-function randomUnit(r: () => number): Vec3 {
-  const z = 2 * r() - 1;
-  const phi = 2 * Math.PI * r();
-  const s = Math.sqrt(Math.max(0, 1 - z * z));
-  return [s * Math.cos(phi), s * Math.sin(phi), z];
-}
+function faceDensities(faces: Triangle[], kernels: Kernel[], normalizeMass: number) {
+  const out = new Float64Array(faces.length);
+  for (let i = 0; i < faces.length; i++) out[i] = densityAt(kernels, faces[i]!.center);
+  if (normalizeMass <= 0) return out;
 
-function sampleKernels(kernels: Kernel[], count: number, bodyRadius: number) {
-  const scales = kernels.map((k) => Math.max(1 / Math.max(k.sigma, 1e-12), 1));
-  const masses = kernels.map((k, i) => {
-    const truncated = Math.min(scales[i]!, bodyRadius);
-    return k.w * Math.pow(truncated, 3);
-  });
-  const total = masses.reduce((s, m) => s + Math.abs(m), 0) || 1;
-  const counts = masses.map((m) => Math.max(1, Math.floor((count * Math.abs(m)) / total)));
-  let totalCount = counts.reduce((s, n) => s + n, 0);
-  let cursor = 0;
-  while (totalCount < count) {
-    const at = cursor++ % counts.length;
-    counts[at] = counts[at]! + 1;
-    totalCount++;
-  }
-  while (totalCount > count) {
-    let at = -1;
-    for (let i = counts.length - 1; i >= 0; i--) {
-      if (counts[i]! > 1) {
-        at = i;
-        break;
-      }
-    }
-    if (at < 0) break;
-    counts[at] = counts[at]! - 1;
-    totalCount--;
-  }
-
-  const random = rng(0x51a7e);
-  const out: number[] = [];
-  for (let i = 0; i < kernels.length; i++) {
-    const k = kernels[i]!;
-    const n = counts[i]!;
-    const scale = scales[i]!;
-    const mass = masses[i]! / n;
-    for (let j = 0; j < n; j++) {
-      const u = random();
-      const radius = Math.min(
-        bodyRadius * 2.5,
-        scale * Math.tan(Math.PI * (u - 0.5)),
-      );
-      const dir = randomUnit(random);
-      const r = Number.isFinite(radius) ? Math.abs(radius) : bodyRadius;
-      out.push(
-        k.c[0] + dir[0] * r,
-        k.c[1] + dir[1] * r,
-        k.c[2] + dir[2] * r,
-        mass,
-      );
-    }
-  }
-  return new Float32Array(out);
-}
-
-function sampleUniform(count: number, extents: Vec3) {
-  const random = rng(0x51a7f);
-  const out = new Float32Array(count * 4);
-  for (let i = 0; i < count; i++) {
-    const dir = randomUnit(random);
-    const radius = Math.cbrt(random());
-    out[i * 4] = dir[0] * extents[0] * radius;
-    out[i * 4 + 1] = dir[1] * extents[1] * radius;
-    out[i * 4 + 2] = dir[2] * extents[2] * radius;
-    out[i * 4 + 3] = 1 / count;
-  }
+  let total = 0;
+  for (let i = 0; i < faces.length; i++) total += out[i]! * faces[i]!.area;
+  const scale = total !== 0 ? normalizeMass / total : 1;
+  for (let i = 0; i < out.length; i++) out[i] = out[i]! * scale;
   return out;
 }
 
@@ -178,12 +126,6 @@ for (const p of mesh.verts) {
   }
 }
 console.log("computed bounds");
-const extent: Vec3 = [
-  (max[0] - min[0]) / 2,
-  (max[1] - min[1]) / 2,
-  (max[2] - min[2]) / 2,
-];
-const bodyRadius = Math.max(...extent);
 
 const observerStride = 16 + 6 * 4 + mesh.faces.length * 12;
 const observers = new Uint8Array(observerStride);
@@ -215,39 +157,42 @@ for (const face of mesh.faces) {
 }
 console.log("quantized observers");
 
-const cauchy = sampleKernels(parseKernels(join(root, "assets/density/cauchy.toml")), 768, bodyRadius);
-console.log("sampled cauchy sources");
-const elliptic = sampleKernels(
-  parseKernels(join(root, "assets/density/cauchy_elliptic.toml")),
-  512,
-  bodyRadius,
+const cauchy = faceDensities(
+  mesh.faces,
+  parseKernels(join(root, "assets/density/cauchy.toml")),
+  4.50e11,
 );
-console.log("sampled elliptic sources");
-const uniform = sampleUniform(384, extent);
-const sets = [
-  { id: 0, data: cauchy },
-  { id: 1, data: elliptic },
-  { id: 2, data: uniform },
-];
+console.log("sampled Cauchy density on every triangle");
+const elliptic = faceDensities(
+  mesh.faces,
+  parseKernels(join(root, "assets/density/cauchy_elliptic.toml")),
+  0,
+);
+console.log("sampled elliptic density on every triangle");
 
-const sourceBytes = 16 + sets.reduce((n, set) => n + 16 + set.data.byteLength, 0);
+const sourceBytes = 16 + mesh.faces.length * 12 * 4;
 const sources = new Uint8Array(sourceBytes);
 const sourceView = new DataView(sources.buffer);
 sourceView.setUint32(0, 0x31535952, true); // RYS1
-sourceView.setUint32(4, 1, true);
-sourceView.setUint32(8, sets.length, true);
+sourceView.setUint32(4, 2, true);
+sourceView.setUint32(8, mesh.faces.length, true);
 sourceView.setUint32(12, 0, true);
 let sourceOffset = 16;
-for (const set of sets) {
-  sourceView.setUint32(sourceOffset, set.id, true);
-  sourceView.setUint32(sourceOffset + 4, set.data.length / 4, true);
-  sourceView.setBigUint64(sourceOffset + 8, 0n, true);
-  sourceOffset += 16;
-  sources.set(new Uint8Array(set.data.buffer), sourceOffset);
-  sourceOffset += set.data.byteLength;
+for (let i = 0; i < mesh.faces.length; i++) {
+  const face = mesh.faces[i]!;
+  for (const vertex of [face.a, face.b, face.c]) {
+    sourceView.setFloat32(sourceOffset, vertex[0], true);
+    sourceView.setFloat32(sourceOffset + 4, vertex[1], true);
+    sourceView.setFloat32(sourceOffset + 8, vertex[2], true);
+    sourceOffset += 12;
+  }
+  sourceView.setFloat32(sourceOffset, cauchy[i]!, true);
+  sourceView.setFloat32(sourceOffset + 4, elliptic[i]!, true);
+  sourceView.setFloat32(sourceOffset + 8, 1, true);
+  sourceOffset += 12;
 }
 
 mkdirSync(outDir, { recursive: true });
 await Bun.write(join(outDir, "face_observers.bin"), observers);
 await Bun.write(join(outDir, "preview_sources.bin"), sources);
-console.log(`wrote ${mesh.faces.length} observers and ${sets.length} source sets`);
+console.log(`wrote ${mesh.faces.length} observers and full-face source geometry`);

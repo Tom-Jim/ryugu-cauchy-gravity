@@ -366,7 +366,7 @@
     let lastPulledKey = "";
     let livePreview = null;
     let previewRunning = false;
-    let previewTargetMm = null;
+    let previewTarget = null;
     let previewGeneration = 0;
     let previewAbort = null;
     /** Static records never change during a session; keep each response once. */
@@ -401,7 +401,7 @@
       algoBtn.disabled = true;
       recordGeneration++;
       previewGeneration++;
-      previewTargetMm = null;
+      previewTarget = null;
       previewAbort?.abort();
       try {
         algo = next;
@@ -425,7 +425,11 @@
         applyAlgoLabels();
         statusEl.textContent = `Loading ${cfg.name}…`;
 
-        await pollStatus();
+        if (STATIC_DEMO) {
+          await requestStaticCompute(standoffMm, { preserveWindow: false });
+        } else {
+          await pollStatus();
+        }
       } finally {
         algoSwitching = false;
         algoBtn.disabled = false;
@@ -445,13 +449,13 @@
     let wasmViewer = null;
 
     if (STATIC_DEMO) {
-      bakeBtn.hidden = true;
+      bakeBtn.hidden = false;
       resumeBtn.hidden = true;
       standoffStatic.hidden = false;
-      standoffStatic.textContent = "GPU live";
-      standoffTitle.textContent = "Release to compute";
+      standoffStatic.textContent = "Exact / full";
+      standoffTitle.textContent = "Release to recompute";
       standoffStatic.title =
-        "Exact records anchor the display; intermediate heights are evaluated on the GPU.";
+        "Known heights use exact records; other heights run a full surface recompute.";
     }
 
     const show = (t) => {
@@ -549,7 +553,9 @@
       statusEl.textContent = line;
       const running = s.state === "running";
       if (STATIC_DEMO) {
-        bakeBtn.hidden = true;
+        bakeBtn.hidden = false;
+        bakeBtn.disabled = previewRunning;
+        bakeBtn.textContent = previewRunning ? "Computing…" : "Recompute";
         resumeBtn.hidden = true;
       } else {
         bakeBtn.disabled = running;
@@ -859,17 +865,17 @@
     // Controls
     // ---------------------------------------------------------------------
     async function startBake(mode) {
-      const generation = ++recordGeneration;
       if (STATIC_DEMO) {
-        previewGeneration++;
-        previewTargetMm = null;
+        previewTarget = null;
         previewAbort?.abort();
-        statusEl.textContent = "Loading the precomputed record…";
         compareKey = "";
-        if (wasmViewer) await pullBakeIntoWasm(wasmViewer, generation);
-        await pollStatus();
+        await requestStaticCompute(standoffMm, {
+          preserveWindow: false,
+          forceCompute: true,
+        });
         return;
       }
+      const generation = ++recordGeneration;
       const api = bakeApi;
       const density = densityMode;
       bakeBtn.disabled = true;
@@ -902,7 +908,7 @@
       // Whatever is on disk now belongs to the previous height.
       setStandoffRecordLabel(Number.NaN);
       if (STATIC_DEMO) {
-        queueLivePreview(standoffMm);
+        void requestStaticCompute(standoffMm, { preserveWindow: false });
       } else {
         startBake("restart");
       }
@@ -923,9 +929,65 @@
       return mode === "elliptic" ? "elliptic" : mode === "constant" ? "constant" : "cauchy";
     }
 
-    function queueLivePreview(mm) {
+    const STATIC_ANCHOR_MM = 16000;
+    // The upper half of the slider is 62 mm per step, so 16.00 m snaps to a
+    // position that decodes to 16004 mm. Treat the half-step as the same anchor.
+    const isStaticAnchor = (mm) => Math.abs(mm - STATIC_ANCHOR_MM) < 31;
+
+    async function requestStaticCompute(
+      mm,
+      { preserveWindow = false, forceCompute = false } = {},
+    ) {
+      if (!STATIC_DEMO) return;
+      const generation = ++recordGeneration;
+      setStandoffUi(mm);
+      setStandoffRecordLabel(Number.NaN);
+      compareKey = "";
+      window.__bakeScalarStats = null;
+      if (!livePreview || !wasmViewer) {
+        statusEl.textContent = "Full-height recomputation is not initialized";
+        return;
+      }
+
+      if (!forceCompute && isStaticAnchor(mm)) {
+        const asset = recordAsset();
+        try {
+          const bytes = await loadRecordBytes(asset);
+          if (generation !== recordGeneration || recordAsset() !== asset) return;
+          const parsed = parseFaceScalars(bytes);
+          if (!parsed) throw new Error("invalid precomputed RHGF v5 record");
+          if (preserveWindow && wasmViewer.push_bake_update_preserving_window) {
+            wasmViewer.push_bake_update_preserving_window(bytes);
+          } else {
+            wasmViewer.push_bake_update(bytes);
+          }
+          lastPulledKey = "";
+          await refreshBakeScalarStats(parsed);
+          setStandoffRecordLabel(parsed.standoffMm);
+          renderStatus({
+            state: "done",
+            message: `Exact precomputed ${fmtMm(parsed.standoffMm)} record`
+              + (preserveWindow ? " · shared density colour scale" : ""),
+            percent: 100,
+            current: parsed.total,
+            total: parsed.total,
+            standoffMm: parsed.standoffMm,
+            densityMode,
+          });
+        } catch (e) {
+          if (generation === recordGeneration) {
+            statusEl.textContent = `precomputed record failed: ${e}`;
+          }
+        }
+        return;
+      }
+
+      queueLivePreview(mm, { preserveWindow, generation });
+    }
+
+    function queueLivePreview(mm, { preserveWindow = false, generation = recordGeneration } = {}) {
       if (!STATIC_DEMO || !livePreview || !wasmViewer) return;
-      previewTargetMm = mm;
+      previewTarget = { mm, preserveWindow, generation };
       previewGeneration++;
       previewAbort?.abort();
       if (!previewRunning) void runLivePreviewQueue();
@@ -933,22 +995,25 @@
 
     async function runLivePreviewQueue() {
       previewRunning = true;
+      bakeBtn.disabled = true;
+      bakeBtn.textContent = "Computing…";
       try {
-        while (previewTargetMm !== null) {
-          const mm = previewTargetMm;
-          previewTargetMm = null;
+        while (previewTarget !== null) {
+          const job = previewTarget;
+          previewTarget = null;
           const token = previewGeneration;
           const asset = recordAsset();
           const controller = new AbortController();
           previewAbort = controller;
           try {
+            if (job.generation !== recordGeneration) continue;
             const referenceBytes = await loadRecordBytes(asset);
             if (token !== previewGeneration || recordAsset() !== asset) continue;
-            setStandoffRecordLabel(mm);
-            statusEl.textContent = `Live GPU preview · ${fmtMm(mm)} · 0.0%`;
+            setStandoffRecordLabel(job.mm);
+            statusEl.textContent = `Full surface recompute · ${fmtMm(job.mm)} · 0.0%`;
             const result = await livePreview.evaluate({
               sourceSet: previewSourceSet(),
-              heightMm: mm,
+              heightMm: job.mm,
               referenceBytes,
               signal: controller.signal,
               onProgress: (pct) => {
@@ -956,19 +1021,33 @@
                 const bounded = Math.max(0, Math.min(1, pct));
                 barFill.style.transform = `scaleX(${bounded})`;
                 statusEl.textContent =
-                  `Live GPU preview · ${fmtMm(mm)} · ${(100 * bounded).toFixed(1)}%`;
+                  `Full surface recompute · ${fmtMm(job.mm)} · ${(100 * bounded).toFixed(1)}%`;
               },
             });
             if (token !== previewGeneration || !result || recordAsset() !== asset) continue;
-            wasmViewer.push_bake_update(result);
+            if (job.preserveWindow && wasmViewer.push_bake_update_preserving_window) {
+              wasmViewer.push_bake_update_preserving_window(result);
+            } else {
+              wasmViewer.push_bake_update(result);
+            }
             window.__bakeScalarStats = null;
             const parsed = parseFaceScalars(result);
-            setStandoffRecordLabel(parsed?.standoffMm ?? mm);
-            statusEl.textContent =
-              `Live GPU preview · ${fmtMm(mm)} · 100.0% · anchored to exact 16.00 m record`;
+            setStandoffRecordLabel(parsed?.standoffMm ?? job.mm);
+            await refreshBakeScalarStats(parsed);
+            if (token !== previewGeneration || recordAsset() !== asset) continue;
+            renderStatus({
+              state: "done",
+              message: `Full surface recompute · ${fmtMm(job.mm)}`
+                + (job.preserveWindow ? " · shared density colour scale" : ""),
+              percent: 100,
+              current: parsed?.total ?? 0,
+              total: parsed?.total ?? 0,
+              standoffMm: parsed?.standoffMm ?? job.mm,
+              densityMode,
+            });
           } catch (e) {
             if (token === previewGeneration) {
-              statusEl.textContent = `live preview failed: ${e}`;
+              statusEl.textContent = `Full surface recompute failed: ${e}`;
             }
           } finally {
             if (previewAbort === controller) previewAbort = null;
@@ -976,6 +1055,8 @@
         }
       } finally {
         previewRunning = false;
+        bakeBtn.disabled = false;
+        bakeBtn.textContent = "Recompute";
       }
     }
 
@@ -1095,7 +1176,11 @@
       applyAlgoLabels();
       compareKey = "";
       statusEl.textContent = `Switched to ${densityLabel(densityMode)} density, recomputing…`;
-      startBake("restart");
+      if (STATIC_DEMO) {
+        void requestStaticCompute(standoffMm, { preserveWindow: true });
+      } else {
+        startBake("restart");
+      }
     });
 
     applyAlgoLabels();
@@ -1112,47 +1197,39 @@
       show("WebGPU is required (navigator.gpu is unavailable in this browser).");
     } else {
       try {
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-          show("No WebGPU adapter: open this page in a local Chrome or Edge build with WebGPU enabled.");
-        } else {
-          // Observation height for this session: an explicit ?standoff= wins,
-          // otherwise the height the record on disk was baked at (the status
-          // poll adopts it a moment later), otherwise the shared default.
-          const urlStandoff = Number(new URLSearchParams(location.search).get("standoff"));
-          if (
-            Number.isFinite(urlStandoff)
-            && urlStandoff >= STANDOFF_MIN_MM
-            && urlStandoff <= STANDOFF_MAX_MM
-          ) {
-            setStandoffUi(urlStandoff);
-          }
-          const wasm = await import("./pkg/ryugu_cauchy_gravity.js");
-          await wasm.default({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
-          wasmViewer = wasm;
-          let bakeBytes = new Uint8Array(28);
-          try {
-            bakeBytes = await loadRecordBytes(recordAsset());
-          } catch {
-            /* start gray; the bake may create the file */
-          }
-          wasm.run_with_bake(bakeBytes);
-          lastPulledKey = statusRecordKey(initialStatus);
-          if (STATIC_DEMO) {
-            const previewDevice = await adapter.requestDevice();
-            const { LivePreview } = await import("./src/web/live_preview.js");
-            livePreview = new LivePreview(previewDevice, {
-              adapter,
-              observerUrl: "./assets/live/face_observers.bin",
-              sourceUrl: "./assets/live/preview_sources.bin",
-            });
-            await livePreview.init();
-          }
-          if (initialStatus?.done) {
-            await refreshBakeScalarStats(
-              parseFaceScalars(bakeBytes) ?? null,
-            );
-          }
+        // Observation height for this session: an explicit ?standoff= wins,
+        // otherwise the height the record on disk was baked at (the status
+        // poll adopts it a moment later), otherwise the shared default.
+        const urlStandoff = Number(new URLSearchParams(location.search).get("standoff"));
+        if (
+          Number.isFinite(urlStandoff)
+          && urlStandoff >= STANDOFF_MIN_MM
+          && urlStandoff <= STANDOFF_MAX_MM
+        ) {
+          setStandoffUi(urlStandoff);
+        }
+        const wasm = await import("./pkg/ryugu_cauchy_gravity.js");
+        await wasm.default({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
+        wasmViewer = wasm;
+        let bakeBytes = new Uint8Array(28);
+        try {
+          bakeBytes = await loadRecordBytes(recordAsset());
+        } catch {
+          /* start gray; the bake may create the file */
+        }
+        wasm.run_with_bake(bakeBytes);
+        lastPulledKey = statusRecordKey(initialStatus);
+        if (STATIC_DEMO) {
+          const { LivePreview } = await import("./src/web/live_preview.js");
+          livePreview = new LivePreview({
+            sourceUrl: "./assets/live/preview_sources.bin?v=2",
+          });
+          await livePreview.init();
+        }
+        if (initialStatus?.done) {
+          await refreshBakeScalarStats(
+            parseFaceScalars(bakeBytes) ?? null,
+          );
         }
       } catch (e) {
         show(String(e?.stack || e));

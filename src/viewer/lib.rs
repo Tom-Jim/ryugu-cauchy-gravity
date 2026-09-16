@@ -22,7 +22,8 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use gradient::{
     BakePaint, DisplayWindow, colormap_scalar, display_window_for, explode_mesh_for_flat_faces,
-    init_gray_colors, paint_face_on_colors, push_bake_bytes, take_pending_bake,
+    init_gray_colors, paint_face_on_colors, push_bake_bytes, push_bake_bytes_preserving_window,
+    take_pending_bake,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -56,6 +57,11 @@ pub fn run_with_bake(bytes: &[u8]) {
 #[wasm_bindgen]
 pub fn push_bake_update(bytes: &[u8]) {
     push_bake_bytes(bytes);
+}
+
+#[wasm_bindgen]
+pub fn push_bake_update_preserving_window(bytes: &[u8]) {
+    push_bake_bytes_preserving_window(bytes);
 }
 
 fn run_app() {
@@ -222,10 +228,10 @@ fn prepare_paint_target(
 }
 
 fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
-    let Some(baked) = take_pending_bake() else {
+    let Some(pending) = take_pending_bake() else {
         return;
     };
-    let Ok(face_scalar) = baked else {
+    let Ok(face_scalar) = pending.baked else {
         return;
     };
     if paint.painted.len() != face_scalar.len() {
@@ -288,9 +294,12 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
     // Different completed records can have the same finite count while every
     // scalar differs, so finite count alone is not a record identity.
     if full_recolor {
-        // Same window rule as the RT-FP path, derived from the raw face scalars:
-        // equal values therefore map to equal colours in every viewer.
-        paint.window = display_window_for(&paint.scalars);
+        // Density switches preserve the previous scale so a roughly uniform
+        // amplitude change remains visible instead of being normalized away.
+        // Height and algorithm changes still derive a fresh robust window.
+        if !pending.preserve_window || !paint.window.is_valid() {
+            paint.window = display_window_for(&paint.scalars);
+        }
         // Full recolor when the display mapping changes.
         let n_faces = paint.scalars.len() as u32;
         paint.painted.fill(false);

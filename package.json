@@ -16,7 +16,8 @@
   "scripts": {
     "dev": "bun run build:dev && bun run serve",
     "serve": "bun src/server/server.ts",
-    "build": "bun scripts/build.mjs --release",
+    "build": "bun scripts/build.mjs --dev",
+    "build:release": "bun scripts/build.mjs --release",
     "build:dev": "bun scripts/build.mjs --dev",
     "pages:build": "bun run build && bun run pages:stage",
     "pages:stage": "bun scripts/stage-pages.mjs",
