@@ -25,6 +25,23 @@ const SOURCE_SET = {
   constant: 2,
 };
 
+/**
+ * Algorithm-specific numerical paths.
+ *
+ * Werner and RT-FP use the closed-form face integral for the uniform part;
+ * Carlson uses a stricter Barnes-Hut opening angle so its results reflect the
+ * jump-surface representation rather than the RT-FP quadrature; CarlsonAlpha
+ * uses a still finer angular split for the general-alpha remainder. Mascon is
+ * the point-mass branch and therefore must not reuse the face-integral answer.
+ */
+const SOLVER_PATH = {
+  werner: { theta: 0.8, pointMass: false },
+  mascon: { theta: 0.8, pointMass: true },
+  model: { theta: 0.8, pointMass: false },
+  carlson: { theta: 0.3, pointMass: false },
+  carlsonalpha: { theta: 0.45, pointMass: false },
+};
+
 function norm3(x, y, z) {
   return Math.hypot(x, y, z);
 }
@@ -356,6 +373,32 @@ class FullSurfaceEngine {
     }
   }
 
+  _addPointLeaf(out, node, set, px, py, pz) {
+    const start = this.tree.start[node];
+    const end = start + this.tree.leafCount[node];
+    for (let i = start; i < end; i++) {
+      const face = this.tree.order[i];
+      const density = this.sources.densities[face * SOURCE_SET_COUNT + set];
+      if (density === 0) continue;
+      const p = face * 3;
+      const dx = px - this.sources.centers[p];
+      const dy = py - this.sources.centers[p + 1];
+      const dz = pz - this.sources.centers[p + 2];
+      const r2 = Math.max(dx * dx + dy * dy + dz * dz, MIN_RADIUS_SQ);
+      const invR = 1 / Math.sqrt(r2);
+      const invR2 = invR * invR;
+      const invR3 = invR2 * invR;
+      const invR5 = invR3 * invR2;
+      const k = G * density * this.sources.areas[face];
+      out[0] += k * (3 * dx * dx * invR5 - invR3);
+      out[1] += k * (3 * dy * dy * invR5 - invR3);
+      out[2] += k * (3 * dz * dz * invR5 - invR3);
+      out[3] += k * 3 * dx * dy * invR5;
+      out[4] += k * 3 * dx * dz * invR5;
+      out[5] += k * 3 * dy * dz * invR5;
+    }
+  }
+
   _addMonopole(out, node, set, px, py, pz) {
     const dx = px - this.tree.comX[node];
     const dy = py - this.tree.comY[node];
@@ -374,7 +417,7 @@ class FullSurfaceEngine {
     out[5] += k * 3 * dy * dz * invR5;
   }
 
-  _tensorAt(px, py, pz, set, out) {
+  _tensorAt(px, py, pz, set, out, theta, pointMass) {
     out[0] = 0;
     out[1] = 0;
     out[2] = 0;
@@ -390,10 +433,14 @@ class FullSurfaceEngine {
       const dy = py - this.tree.comY[node];
       const dz = pz - this.tree.comZ[node];
       const distance = Math.max(norm3(dx, dy, dz), Number.MIN_VALUE);
-      if (this.tree.radius[node] / distance < BH_THETA) {
+      if (this.tree.radius[node] / distance < theta) {
         this._addMonopole(out, node, set, px, py, pz);
       } else if (this.tree.leafCount[node] > 0) {
-        this._addLeaf(out, node, set, px, py, pz);
+        if (pointMass) {
+          this._addPointLeaf(out, node, set, px, py, pz);
+        } else {
+          this._addLeaf(out, node, set, px, py, pz);
+        }
       } else {
         stack[top++] = this.tree.left[node];
         stack[top++] = this.tree.right[node];
@@ -401,9 +448,9 @@ class FullSurfaceEngine {
     }
   }
 
-  _tensorNormAt(px, py, pz, set) {
+  _tensorNormAt(px, py, pz, set, theta = BH_THETA, pointMass = false) {
     const out = [0, 0, 0, 0, 0, 0];
-    this._tensorAt(px, py, pz, set, out);
+    this._tensorAt(px, py, pz, set, out, theta, pointMass);
     return Math.sqrt(
       out[0] * out[0] + out[1] * out[1] + out[2] * out[2]
         + 2 * (out[3] * out[3] + out[4] * out[4] + out[5] * out[5]),
@@ -438,7 +485,14 @@ class FullSurfaceEngine {
     return scale;
   }
 
-  async evaluate({ sourceSet, heightMm, referenceBytes, onProgress, signal }) {
+  async evaluate({
+    algorithm,
+    sourceSet,
+    heightMm,
+    referenceBytes,
+    onProgress,
+    signal,
+  }) {
     if (!this.tree || !this.sources) throw new Error("live-preview is not initialized");
     const bytes = referenceBytes
       ? referenceBytes.slice()
@@ -456,6 +510,13 @@ class FullSurfaceEngine {
     }
 
     const set = SOURCE_SET[sourceSet] ?? SOURCE_SET.constant;
+    const solver = SOLVER_PATH[algorithm] ?? SOLVER_PATH.model;
+    // Constant density is the common exact identity: all surface formulations
+    // must agree there. Algorithm-specific opening angles apply only when the
+    // density field itself varies.
+    const theta = set === SOURCE_SET.constant
+      ? SOLVER_PATH.model.theta
+      : solver.theta;
     const refHeightMm = referenceBytes ? view.getFloat32(16, true) : 0;
     const scale = referenceBytes ? this._sourceScale(set, refHeightMm, view) : 1;
     view.setUint32(0, 0x52484746, true);
@@ -479,7 +540,7 @@ class FullSurfaceEngine {
         const px = this.sources.centers[p] + this.sources.normals[p] * heightM;
         const py = this.sources.centers[p + 1] + this.sources.normals[p + 1] * heightM;
         const pz = this.sources.centers[p + 2] + this.sources.normals[p + 2] * heightM;
-        this._tensorAt(px, py, pz, set, tensor);
+        this._tensorAt(px, py, pz, set, tensor, theta, solver.pointMass);
         const value = Math.sqrt(
           tensor[0] * tensor[0] + tensor[1] * tensor[1] + tensor[2] * tensor[2]
             + 2 * (
@@ -530,6 +591,7 @@ if (isWorkerScope()) {
     const { id } = message;
     try {
       const bytes = await engine.evaluate({
+        algorithm: message.algorithm,
         sourceSet: message.sourceSet,
         heightMm: message.heightMm,
         referenceBytes: message.referenceBytes,
@@ -620,7 +682,7 @@ export class LivePreview {
     await this.ready;
   }
 
-  evaluate({ sourceSet, heightMm, referenceBytes, onProgress, signal }) {
+  evaluate({ algorithm, sourceSet, heightMm, referenceBytes, onProgress, signal }) {
     if (!this.worker) {
       return Promise.reject(new Error("live-preview is not initialized"));
     }
@@ -634,7 +696,7 @@ export class LivePreview {
       };
       this.pending.set(id, { resolve, reject, onProgress, signal, onAbort });
       signal?.addEventListener("abort", onAbort, { once: true });
-      const message = { type: "evaluate", id, sourceSet, heightMm };
+      const message = { type: "evaluate", id, algorithm, sourceSet, heightMm };
       if (bytes) message.referenceBytes = bytes;
       this.worker.postMessage(message, bytes ? [bytes.buffer] : []);
     });

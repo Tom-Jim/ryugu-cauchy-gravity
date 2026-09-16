@@ -418,6 +418,7 @@
         parsed,
         sourceSet,
         algo,
+        algorithm: ALGOS[algo]?.name ?? algo,
         densityMode: resultMode(),
         standoffMm: parsed.standoffMm,
         revision: ++latestResultRevision,
@@ -1231,6 +1232,7 @@
             statusEl.textContent = `${label} · 0.0%`;
             setStandoffRecordLabel(job.mm);
             const result = await livePreview.evaluate({
+              algorithm: algo,
               sourceSet: previewSourceSet(),
               heightMm: job.mm,
               signal: controller.signal,
@@ -1439,9 +1441,9 @@
         await waitForRenderedFrames();
         lastPulledKey = statusRecordKey(initialStatus);
         if (STATIC_DEMO) {
-          const { LivePreview } = await import("./src/web/live_preview.js");
+          const { LivePreview } = await import("./src/web/live_preview.js?v=3");
           livePreview = new LivePreview({
-            sourceUrl: "./assets/live/preview_sources.bin?v=2",
+            sourceUrl: "./assets/live/preview_sources.bin?v=3",
           });
           await livePreview.init();
         }
