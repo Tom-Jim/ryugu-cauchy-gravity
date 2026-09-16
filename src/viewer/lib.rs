@@ -13,7 +13,9 @@ use bevy::camera::primitives::Aabb;
 use bevy::log::{Level, LogPlugin};
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use bevy::render::settings::{Backends, RenderCreation, WgpuSettings, WgpuSettingsPriority};
+use bevy::render::settings::{
+    Backends, MemoryHints, RenderCreation, WgpuSettings, WgpuSettingsPriority,
+};
 use bevy::render::{RenderPlugin, render_resource::WgpuLimits};
 use bevy::window::PresentMode;
 use bevy::winit::{UpdateMode, WinitSettings};
@@ -97,8 +99,9 @@ fn run_app() {
                 .set(RenderPlugin {
                     render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
                         backends: Some(Backends::BROWSER_WEBGPU),
-                        priority: WgpuSettingsPriority::Functionality,
+                        priority: WgpuSettingsPriority::WebGPU,
                         limits: WgpuLimits::default(),
+                        memory_hints: MemoryHints::MemoryUsage,
                         ..default()
                     })),
                     ..default()

@@ -92,7 +92,8 @@
       <strong>Desktop browser required</strong>
       <p>
         Mobile support for Android and iOS is not available yet. This WebGPU
-        viewer currently requires a desktop browser such as Chrome or Edge.
+        viewer currently requires a desktop browser such as Chrome, Edge, or
+        Firefox.
       </p>
       <button id="mobile-warning-dismiss" type="button">Continue anyway</button>
     </div>
@@ -153,7 +154,10 @@
     const smallTouchDevice =
       navigator.maxTouchPoints > 1
       && Math.min(window.screen.width, window.screen.height) <= 820;
-    if (mobileUserAgent || smallTouchDevice) mobileWarning.hidden = false;
+    const narrowViewport = window.matchMedia("(max-width: 720px)").matches;
+    if (mobileUserAgent || smallTouchDevice || narrowViewport) {
+      mobileWarning.hidden = false;
+    }
     mobileWarningDismiss.addEventListener("click", () => {
       mobileWarning.hidden = true;
     });
