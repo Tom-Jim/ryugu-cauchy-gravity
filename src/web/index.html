@@ -217,12 +217,12 @@
     // ---------------------------------------------------------------------
     // Algorithm selection
     //
-    // Four solvers share one record format (RHGF v5) and one display path, so
-    // the page only needs to know the control endpoint, the record to paint and
-    // whether the density field is selectable.
+    // All solvers share one record format (RHGF v5) and one display path, so
+    // the page only needs to know the control endpoint, the available density
+    // records, and which of them are selectable.
     // ---------------------------------------------------------------------
     const ALGO_KEY = "ryugu_algo";
-    const ALGO_ORDER = ["werner", "mascon", "model", "carlson"];
+    const ALGO_ORDER = ["werner", "mascon", "model", "carlson", "carlsonalpha"];
     const ALGOS = {
       werner: {
         name: "Werner",
@@ -230,43 +230,54 @@
         title: "Werner · uniform density · analytic polyhedral gradient",
         api: "/api/werner",
         asset: "assets/records/gradient_faces.bin",
-        density: false,
         compare: false,
         next: "Switch to Mascon (voxel)",
       },
       mascon: {
         name: "Mascon",
-        short: "Mascon · voxel direct sum",
-        title: "Mascon · 5.2 m voxel direct sum · Cauchy density",
         api: "/api/mascon",
-        asset: "assets/records/mascon_faces.bin",
-        density: false,
+        densityModes: ["elliptic", "cauchy"],
+        defaultDensity: "elliptic",
+        assets: {
+          elliptic: "assets/records/mascon_elliptic_faces.bin",
+          cauchy: "assets/records/mascon_faces.bin",
+        },
         compare: false,
         next: "Switch to RT-FP",
       },
       model: {
         name: "RT-FP",
-        short: "RT-FP · Cauchy vein density",
-        shortConstant: "RT-FP · uniform density",
-        title: "RT-FP · Cauchy vein density · analytic near field + GPU quadrature",
-        titleConstant: "RT-FP · uniform density ρ₀ · analytic near field only",
         api: "/api/rtfp",
-        assetCauchy: "assets/records/rtfp_faces.bin",
-        assetConstant: "assets/records/rtfp_constant_faces.bin",
-        density: true,
+        densityModes: ["cauchy", "constant"],
+        defaultDensity: "cauchy",
+        assets: {
+          cauchy: "assets/records/rtfp_faces.bin",
+          constant: "assets/records/rtfp_constant_faces.bin",
+        },
         compare: true,
         next: "Switch to Carlson",
       },
       carlson: {
         name: "Carlson",
-        short: "Carlson · Cauchy vein density",
-        shortConstant: "Carlson · uniform density",
-        title: "Carlson · Cauchy vein density · jump-surface surface integral",
-        titleConstant: "Carlson · uniform density · jump-surface surface integral",
         api: "/api/carlson",
-        assetCauchy: "assets/records/carlson_cauchy_faces.bin",
-        assetConstant: "assets/records/carlson_constant_faces.bin",
-        density: true,
+        densityModes: ["cauchy", "constant"],
+        defaultDensity: "cauchy",
+        assets: {
+          cauchy: "assets/records/carlson_cauchy_faces.bin",
+          constant: "assets/records/carlson_constant_faces.bin",
+        },
+        compare: true,
+        next: "Switch to CarlsonAlpha",
+      },
+      carlsonalpha: {
+        name: "CarlsonAlpha",
+        api: "/api/carlsonalpha",
+        densityModes: ["elliptic", "constant"],
+        defaultDensity: "elliptic",
+        assets: {
+          elliptic: "assets/records/carlsonalpha_elliptic_faces.bin",
+          constant: "assets/records/carlsonalpha_constant_faces.bin",
+        },
         compare: true,
         next: "Switch to Werner",
       },
@@ -282,9 +293,8 @@
     let algo = getAlgo();
     localStorage.setItem(ALGO_KEY, algo);
     let cfg = ALGOS[algo];
-    /** RT-FP and Carlson bake one record per density model; the rest are fixed. */
-    let densityMode = "cauchy";
-    let isDensitySelectable = cfg.density;
+    let densityMode = cfg.defaultDensity ?? "cauchy";
+    let isDensitySelectable = Array.isArray(cfg.densityModes) && cfg.densityModes.length > 1;
     let bakeApi = cfg.api;
     /**
      * Every async read carries the generation it started in. Switching algorithms
@@ -298,9 +308,9 @@
     let statsGeneration = -1;
     let lastPulledKey = "";
     const recordAsset = () =>
-      (isDensitySelectable
-        ? (densityMode === "constant" ? cfg.assetConstant : cfg.assetCauchy)
-        : cfg.asset);
+      (isDensitySelectable ? cfg.assets?.[densityMode] : cfg.asset)
+      ?? cfg.asset
+      ?? Object.values(cfg.assets ?? {})[0];
 
     async function selectAlgorithm(next) {
       if (!ALGOS[next] || next === algo || algoSwitching) return;
@@ -311,9 +321,9 @@
       try {
         algo = next;
         cfg = ALGOS[next];
-        isDensitySelectable = cfg.density;
+        isDensitySelectable = Array.isArray(cfg.densityModes) && cfg.densityModes.length > 1;
         bakeApi = cfg.api;
-        densityMode = "cauchy";
+        densityMode = cfg.defaultDensity ?? "cauchy";
         compareKey = "";
         window.__bakeScalarStats = null;
         compareEl.hidden = !cfg.compare;
@@ -344,7 +354,7 @@
     }
 
     setStandoffUi(STANDOFF_DEFAULT_MM);
-    algoLabel.textContent = cfg.short;
+    algoLabel.textContent = algoShort();
     algoBtn.textContent = cfg.next;
     algoBtn.addEventListener("click", switchAlgo);
     let wasmViewer = null;
@@ -371,16 +381,63 @@
     // ---------------------------------------------------------------------
     // Status rendering
     // ---------------------------------------------------------------------
+    function densityLabel(mode) {
+      if (mode === "constant") return "uniform";
+      if (mode === "elliptic") return "fractional Cauchy";
+      return "Cauchy";
+    }
+
+    function algoShort() {
+      if (!isDensitySelectable) return cfg.short;
+      if (cfg.name === "Mascon") return `Mascon · ${densityLabel(densityMode)} density`;
+      if (cfg.name === "RT-FP") {
+        return densityMode === "constant"
+          ? "RT-FP · uniform density"
+          : "RT-FP · Cauchy vein density";
+      }
+      if (cfg.name === "Carlson") {
+        return densityMode === "constant"
+          ? "Carlson · uniform density"
+          : "Carlson · Cauchy vein density";
+      }
+      return `CarlsonAlpha · ${densityLabel(densityMode)} density`;
+    }
+
+    function algoTitle() {
+      if (!isDensitySelectable) return cfg.title;
+      if (cfg.name === "Mascon") {
+        return densityMode === "elliptic"
+          ? "Mascon · 5.2 m voxel direct sum · fractional Cauchy density"
+          : "Mascon · 5.2 m voxel direct sum · Cauchy density";
+      }
+      if (cfg.name === "RT-FP") {
+        return densityMode === "constant"
+          ? "RT-FP · uniform density ρ₀ · analytic near field only"
+          : "RT-FP · Cauchy vein density · analytic near field + GPU quadrature";
+      }
+      if (cfg.name === "Carlson") {
+        return densityMode === "constant"
+          ? "Carlson · uniform density · jump-surface surface integral"
+          : "Carlson · Cauchy vein density · jump-surface surface integral";
+      }
+      return densityMode === "constant"
+        ? "CarlsonAlpha · uniform density · GPU radial finite part"
+        : "CarlsonAlpha · general-α Cauchy · GPU radial finite part";
+    }
+
+    function nextDensityMode() {
+      const modes = cfg.densityModes ?? [];
+      const i = modes.indexOf(densityMode);
+      return modes[(i + 1) % modes.length] ?? densityMode;
+    }
+
     function applyAlgoLabels() {
-      const constant = isDensitySelectable && densityMode === "constant";
-      algoLabel.textContent = constant ? cfg.shortConstant : cfg.short;
+      algoLabel.textContent = algoShort();
       algoBtn.textContent = cfg.next;
-      panelTitle.textContent = constant ? cfg.titleConstant : cfg.title;
+      panelTitle.textContent = algoTitle();
       if (isDensitySelectable) {
         densBtn.hidden = false;
-        densBtn.textContent = constant
-          ? "Switch to Cauchy density"
-          : "Switch to uniform density";
+        densBtn.textContent = `Switch to ${densityLabel(nextDensityMode())} density`;
       } else {
         densBtn.hidden = true;
       }
@@ -416,7 +473,7 @@
       if (isDensitySelectable) {
         // The density model lives on the server (it selects the kernel set), so
         // the button label follows the reported status rather than local state.
-        densityMode = s.densityMode === "constant" ? "constant" : "cauchy";
+        if (cfg.densityModes.includes(s.densityMode)) densityMode = s.densityMode;
         applyAlgoLabels();
         densBtn.disabled = running;
         updateAlgorithmCompare(s);
@@ -538,10 +595,9 @@
     /**
      * Reference records.
      *
-     * Werner is the *uniform*-density solver (ρ₀ = 1190 kg/m³) and Mascon is the
-     * *Cauchy*-density one (assets/density/cauchy.toml on 5.253 m voxels). Each
-     * density model therefore has its own independent reference, and both are
-     * shown so the panel states how far the active record sits from either.
+     * Each density model gets its own reference. The primary pair is always the
+     * same field on the same observation surface; secondary pairs are labelled
+     * explicitly so a density mismatch cannot be mistaken for solver error.
      */
     const COMPARE_REFS = {
       werner: {
@@ -550,15 +606,35 @@
         asset: "assets/records/gradient_faces.bin",
         api: "/api/werner/status",
       },
-      mascon: {
+      "mascon-cauchy": {
         name: "Mascon",
         kind: "Cauchy density",
         asset: "assets/records/mascon_faces.bin",
         api: "/api/mascon/status",
+        recordKey: "cauchy",
+      },
+      "mascon-elliptic": {
+        name: "Mascon",
+        kind: "fractional Cauchy density",
+        asset: "assets/records/mascon_elliptic_faces.bin",
+        api: "/api/mascon/status",
+        recordKey: "elliptic",
       },
     };
-    /** Which reference holds the same density model as the active record. */
-    const PRIMARY_REF = { cauchy: "mascon", constant: "werner" };
+    const COMPARE_ORDER = {
+      model: {
+        cauchy: ["mascon-cauchy", "werner"],
+        constant: ["werner", "mascon-cauchy"],
+      },
+      carlson: {
+        cauchy: ["mascon-cauchy", "werner"],
+        constant: ["werner", "mascon-cauchy"],
+      },
+      carlsonalpha: {
+        elliptic: ["mascon-elliptic"],
+        constant: ["werner"],
+      },
+    };
 
     /** Face-by-face comparison only means something at one observation height. */
     function standoffCompareNote(refMm, mineMm) {
@@ -621,32 +697,47 @@
     async function updateAlgorithmCompare(status) {
       if (!cfg.compare || !compareEl) return;
       const generation = recordGeneration;
-      const mode = status?.densityMode === "constant" ? "constant" : "cauchy";
-      const mineTag = mode === "constant"
-        ? `${cfg.name} uniform density`
-        : `${cfg.name} Cauchy density`;
+      const mode = cfg.densityModes?.includes(densityMode) ? densityMode : cfg.defaultDensity;
+      const order = COMPARE_ORDER[algo]?.[mode] ?? [];
+      const mineTag = `${cfg.name} ${densityLabel(mode)} density`;
       compareEl.hidden = false;
       if (!status?.done) {
         compareKey = "";
         compareEl.textContent = "Once the bake completes this record is compared"
-          + " face by face against Werner (uniform density) and Mascon (Cauchy density);"
+          + ` face by face against ${order.map((k) => {
+            const ref = COMPARE_REFS[k];
+            return `${ref.name} (${ref.kind})`;
+          }).join(" and ")};`
           + " a relative difference above 5 % counts as a disagreement.";
+        return;
+      }
+      if (order.length === 0) {
+        compareEl.textContent = "No same-density reference is available for this mode.";
         return;
       }
       if (compareBusy) return;
       compareBusy = true;
       try {
-        // Memoise on everything the two lines depend on: the density model, the
-        // active record, and both reference records.
-        const refKeys = Object.keys(COMPARE_REFS);
-        const refStatuses = await Promise.all(refKeys.map(async (k) => {
+        // Memoise on everything the comparison depends on: the density model,
+        // the active record, and each reference record.
+        const refStatuses = await Promise.all(order.map(async (k) => {
+          const ref = COMPARE_REFS[k];
           if (!STATIC_DEMO) {
-            return (await (await fetch(COMPARE_REFS[k].api, { cache: "no-store" })).json());
+            const payload = await (await fetch(ref.api, { cache: "no-store" })).json();
+            if (!ref.recordKey) return payload;
+            const record = payload.records?.[ref.recordKey] ?? {};
+            return {
+              ...payload,
+              state: record.done ? "done" : payload.state,
+              current: record.current ?? 0,
+              total: record.total ?? 0,
+              standoffMm: record.standoffMm ?? 0,
+            };
           }
-          const res = await fetch(COMPARE_REFS[k].asset, { cache: "no-store" });
-          if (!res.ok) throw new Error(`failed to read ${COMPARE_REFS[k].name} reference`);
+          const res = await fetch(ref.asset, { cache: "no-store" });
+          if (!res.ok) throw new Error(`failed to read ${ref.name} reference`);
           const parsed = parseFaceScalars(await res.arrayBuffer());
-          if (!parsed) throw new Error(`invalid ${COMPARE_REFS[k].name} reference`);
+          if (!parsed) throw new Error(`invalid ${ref.name} reference`);
           return {
             state: "done",
             current: parsed.total,
@@ -654,17 +745,15 @@
             standoffMm: parsed.standoffMm,
           };
         }));
-        const refSts = Object.fromEntries(refKeys.map((k, i) => [k, refStatuses[i]]));
+        const refSts = Object.fromEntries(order.map((k, i) => [k, refStatuses[i]]));
         if (generation !== recordGeneration) return;
         const mineKey = `${status.current ?? ""}/${status.total ?? ""}@${status.standoffMm ?? ""}`;
-        const refKey = refStatuses
-          .map((s) => `${s.state}:${s.current}/${s.total}@${s.standoffMm}`)
+        const refKey = order
+          .map((k, i) => `${k}:${refStatuses[i].state}:${refStatuses[i].current}/${refStatuses[i].total}@${refStatuses[i].standoffMm}`)
           .join("|");
-        const key = `${mode}|${mineKey}|${refKey}`;
+        const key = `${algo}|${mode}|${mineKey}|${refKey}`;
         if (key === compareKey) return;
         compareKey = key;
-        // Same-density reference first: that is the like-for-like pair.
-        const order = [PRIMARY_REF[mode], mode === "cauchy" ? "werner" : "mascon"];
         const lines = [];
         for (const k of order) lines.push(await compareAgainst(COMPARE_REFS[k], refSts[k], mineTag));
         if (generation !== recordGeneration) return;
@@ -700,7 +789,7 @@
         : `Clearing the record and recomputing at ${fmtMm(standoffMm)}…`;
       try {
         const body = { mode, standoffMm };
-        // RT-FP and Carlson bake one record per density model.
+        // Every density-aware solver owns one record per listed model.
         if (isDensitySelectable) body.density = density;
         const s = await (await fetch(`${api}/start`, {
           method: "POST",
@@ -855,13 +944,11 @@
       }
     });
     densBtn.addEventListener("click", () => {
-      densityMode = densityMode === "constant" ? "cauchy" : "constant";
+      densityMode = nextDensityMode();
       recordGeneration++;
       applyAlgoLabels();
       compareKey = "";
-      statusEl.textContent = densityMode === "constant"
-        ? "Switched to uniform density, recomputing…"
-        : "Switched to Cauchy density, recomputing…";
+      statusEl.textContent = `Switched to ${densityLabel(densityMode)} density, recomputing…`;
       startBake("restart");
     });
 

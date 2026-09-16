@@ -17,9 +17,14 @@ import { ROOT, createGpuSolver } from "./gpu_solver";
 export const carlson = createGpuSolver({
   id: "carlson",
   label: "Carlson",
+  defaultDensity: "cauchy",
   outByMode: {
     cauchy: join(ROOT, "assets/records/carlson_cauchy_faces.bin"),
     constant: join(ROOT, "assets/records/carlson_constant_faces.bin"),
+  },
+  densityByMode: {
+    cauchy: join(ROOT, "assets/density/cauchy.toml"),
+    constant: join(ROOT, "assets/density/cauchy.toml"),
   },
   order: join(ROOT, "assets/records/.carlson_order.bin"),
   log: join(ROOT, "assets/records/.carlson_progress.log"),

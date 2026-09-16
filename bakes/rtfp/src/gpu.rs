@@ -6,6 +6,7 @@
 //! | `shaders/analytic.wgsl`    | (point, face)      | uniform-density tensor `W(x)`  |
 //! | `shaders/rays.wgsl`        | (point, direction) | visible intervals of `x − R u`  |
 //! | `shaders/remainder.wgsl`   | point              | deviation quadrature `G Σω T Σw R_k` |
+//! | `shaders/carlson_alpha.wgsl` | point            | general-α radial finite part    |
 //!
 //! The Rust side only loads the mesh, builds the BVH (`bvh.rs`) and does scalar
 //! bookkeeping. WebGPU has no ray-tracing stage, so the traversal itself is
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 /// Interval slots per (point, direction); mirrors `MAX_INTERVALS` in `rays.wgsl`.
-pub const MAX_INTERVALS: usize = 8;
+pub const MAX_INTERVALS: usize = 16;
 
 struct ThreadWaker(std::thread::Thread);
 
@@ -57,6 +58,7 @@ pub struct Device {
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
+    carlson_alpha_pipeline: wgpu::ComputePipeline,
     rays_layout: wgpu::BindGroupLayout,
     analytic_layout: wgpu::BindGroupLayout,
     remainder_layout: wgpu::BindGroupLayout,
@@ -147,6 +149,17 @@ impl Device {
         });
         let remainder_pipeline =
             pipeline(&device, &remainder_layout, &remainder_module, "remainder");
+        let carlson_alpha_module = shader(
+            &device,
+            "carlson_alpha",
+            include_str!("../shaders/carlson_alpha.wgsl"),
+        );
+        let carlson_alpha_pipeline = pipeline(
+            &device,
+            &remainder_layout,
+            &carlson_alpha_module,
+            "carlson_alpha",
+        );
 
         println!("GPU: {} ({:?})", info.name, info.backend);
         Ok(Self {
@@ -157,6 +170,7 @@ impl Device {
             rays_pipeline,
             analytic_pipeline,
             remainder_pipeline,
+            carlson_alpha_pipeline,
             rays_layout,
             analytic_layout,
             remainder_layout,
@@ -240,6 +254,7 @@ pub struct Scene {
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
+    carlson_alpha_pipeline: wgpu::ComputePipeline,
     // scene buffers
     rays_globals: wgpu::Buffer,
     analytic_globals: wgpu::Buffer,
@@ -279,6 +294,7 @@ impl Scene {
             rays_pipeline,
             analytic_pipeline,
             remainder_pipeline,
+            carlson_alpha_pipeline,
             rays_layout,
             analytic_layout,
             remainder_layout,
@@ -394,6 +410,7 @@ impl Scene {
             rays_pipeline,
             analytic_pipeline,
             remainder_pipeline,
+            carlson_alpha_pipeline,
             rays_globals,
             analytic_globals,
             remainder_globals,
@@ -470,6 +487,51 @@ impl Scene {
         t_max: f32,
         t_min: f32,
     ) -> Result<Vec<Sym6>, String> {
+        self.block_remainder_impl(
+            points,
+            dirs,
+            kernels,
+            t_max,
+            t_min,
+            &self.remainder_pipeline,
+            "remainder",
+            false,
+        )
+    }
+
+    /// General-alpha radial finite part for the CarlsonAlpha solver.
+    pub fn block_carlson_alpha(
+        &self,
+        points: &[[f64; 3]],
+        dirs: &Dirs,
+        kernels: &[KernelSi],
+        t_max: f32,
+        t_min: f32,
+    ) -> Result<Vec<Sym6>, String> {
+        self.block_remainder_impl(
+            points,
+            dirs,
+            kernels,
+            t_max,
+            t_min,
+            &self.carlson_alpha_pipeline,
+            "carlson_alpha",
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn block_remainder_impl(
+        &self,
+        points: &[[f64; 3]],
+        dirs: &Dirs,
+        kernels: &[KernelSi],
+        t_max: f32,
+        t_min: f32,
+        pipeline: &wgpu::ComputePipeline,
+        label: &str,
+        allow_inside: bool,
+    ) -> Result<Vec<Sym6>, String> {
         let n = points.len();
         if n == 0 {
             return Ok(Vec::new());
@@ -528,8 +590,8 @@ impl Scene {
             pass.dispatch_workgroups(rays_grid_x, rays_grid_y, 1);
         }
         {
-            let mut pass = enc.begin_compute_pass(&compute_pass("remainder"));
-            pass.set_pipeline(&self.remainder_pipeline);
+            let mut pass = enc.begin_compute_pass(&compute_pass(label));
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.remainder_bind, &[]);
             pass.dispatch_workgroups(groups, 1, 1);
         }
@@ -550,17 +612,21 @@ impl Scene {
         );
         self.queue.submit(Some(enc.finish()));
         let data = self.read_f32(n * 7 + 1)?;
-        if data[n * 6..n * 7].iter().any(|inside| *inside != 0.0) {
-            return Err(
-                "observation point lies inside the mesh; the contact term is not enabled".into(),
-            );
+        if let Some(i) = data[n * 6..n * 7].iter().position(|inside| *inside != 0.0) {
+            if !allow_inside {
+                return Err(format!(
+                    "observation point {i} of {n} lies inside the mesh; the contact term is not \
+                     enabled for this solver"
+                ));
+            }
         }
         if data[n * 7] != 0.0 {
+            let dropped = data[n * 7].to_bits();
             return Err(format!(
                 "ray traversal exceeded the {MAX_INTERVALS}-interval / {}-hit capacity \
-                 ({} dropped intersections/intervals)",
+                 ({dropped} dropped intersections/intervals; raw bits {:#010x})",
                 crate::geom::MAX_HITS,
-                data[n * 7] as u32
+                dropped
             ));
         }
         Ok(data[..n * 6]
@@ -762,7 +828,7 @@ fn faces_to_f32(faces: &[Face]) -> Vec<f32> {
     out
 }
 
-/// `struct Kernel { c: vec3<f32>, sigma: f32, w: f32, _pad, _pad, _pad }`.
+/// `struct Kernel { c: vec3<f32>, sigma: f32, w: f32, alpha: f32, _pad, _pad }`.
 fn kernels_to_f32(kernels: &[KernelSi]) -> Vec<f32> {
     let mut out = Vec::with_capacity(kernels.len() * 8);
     for k in kernels {
@@ -772,7 +838,7 @@ fn kernels_to_f32(kernels: &[KernelSi]) -> Vec<f32> {
             k.c[2] as f32,
             k.sigma as f32,
             k.w as f32,
-            0.0,
+            k.alpha as f32,
             0.0,
             0.0,
         ]);

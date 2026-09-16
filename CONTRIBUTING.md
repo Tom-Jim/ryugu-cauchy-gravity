@@ -1,24 +1,24 @@
 # Contributing
 
 Thanks for looking at this project. It is a numerical-methods comparison suite:
-four independent solvers evaluate the gravity-gradient tensor of the same
-density field over the same 196,608-face shape model of asteroid (162173)
-Ryugu, and the viewer renders all four through one identical display path.
-Because the output of the project is a comparison, the following rules matter
-more here than they would in a typical application.
+five independent solvers evaluate the gravity-gradient tensor of one
+196,608-face shape model of asteroid (162173) Ryugu, and the viewer renders all
+five through one identical display path. Four solvers share the total-mass
+Cauchy field; Mascon and CarlsonAlpha share the raw-weight fractional-Cauchy
+field.
 
 ## Ground rules
 
 1. **Comparability is the contract.** Every solver must write the *same* RHGF v5
    record over the *same* face ordering, at the *same* observation height, on
-   the *same* mass budget. If a change breaks any of those four, it is a
+   the *same* density scale. If a change breaks any of those four, it is a
    regression even if the new numbers look nicer.
-2. **Parallelism for the GPU solvers lives in WGSL.** RT-FP and Carlson express
-   every parallel step as a WGSL compute kernel; do not add host-side threading
-   (`rayon`, `std::thread::spawn` in the Rust host, worker pools) to them. If a
-   GPU solver is too slow, the answer is a better kernel, not a thread pool. The
-   two C++ reference bakes are host programs and predate this rule; new work
-   should not extend that pattern.
+2. **Parallelism for the GPU solvers lives in WGSL.** RT-FP, Carlson and
+   CarlsonAlpha express every parallel step as a WGSL compute kernel; do not add
+   host-side threading (`rayon`, `std::thread::spawn` in the Rust host, worker
+   pools) to them. If a GPU solver is too slow, the answer is a better kernel,
+   not a thread pool. The two C++ reference bakes are host programs and predate
+   this rule; new work should not extend that pattern.
 3. **Prefer a library to hand-rolled code** for anything that already has a
    mature implementation (linear algebra, BVH traversal, image encoding,
    elliptic integrals, CMake targets, HTTP serving).
@@ -29,7 +29,7 @@ more here than they would in a typical application.
 ## Repository layout
 
 ```
-bakes/rtfp/          Rust bake host: RT-FP and Carlson solvers, WGSL kernels
+bakes/rtfp/          Rust bake host: RT-FP, Carlson, CarlsonAlpha and WGSL kernels
 bakes/mascon/        C++ mascon (voxel direct-sum) bake
 bakes/werner/        C++ Werner / ESA polyhedral bake
 bakes/common/        Thin C++ bridge onto the ESA polyhedral-gravity library
@@ -39,7 +39,7 @@ src/viewer/          Bevy + WebGPU viewer (Rust, compiled to WASM)
 src/web/             Single-page control surface
 assets/density/      Density field definitions (TOML)
 assets/models/       Rendered shape model (the raw OBJ stays outside the repo)
-assets/records/      Finished per-face ‖H‖_F records, one per solver
+assets/records/      Finished per-face ‖H‖_F records, one per solver and density
 tools/               Optional helper scripts
 docs/images/         Figures referenced by the README
 ```

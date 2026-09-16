@@ -10,7 +10,7 @@
 #
 # WHY THIS SHAPE
 # --------------
-# Four solvers are compared on the same field:
+# Four total-mass-normalized solvers are compared on the same field:
 #
 #   * Werner / ESA polyhedral — closed form for *uniform* density,
 #   * RT-FP — closed form in the radial direction for the kernel family above,
@@ -19,7 +19,7 @@
 #     decomposition, evaluated as a pure surface integral,
 #   * mascon — the same density sampled onto a 192^3 grid of point masses.
 #
-# The design rule is the one the four algorithms disagree about. Carlson resolves
+# The design rule is the one those algorithms disagree about. Carlson resolves
 # the density along each cone *axis*, so structure that varies with direction
 # costs it nothing (one cone spans one mesh face, ~2 m at the surface) while
 # structure that varies with radius costs slabs, and the slab budget is finite.
@@ -72,7 +72,7 @@
 # The weights below are rescaled at load time so that the integral of rho over
 # the body equals `total_mass_target` (the Ryugu mass scale), using the
 # divergence-theorem volume integral in `bakes/rtfp/src/mass.rs`. Every record on
-# disk — Werner, mascon, RT-FP and Carlson — is on that same mass budget, so a
+# disk - Werner, mascon, RT-FP and Carlson - is on that same mass budget, so a
 # residual face-by-face gap is algorithm or discretisation, never bookkeeping.
 # The alternative convention (rho(0) = bulk_density_ref) is computed and printed
 # by every bake so that the two can never be silently confused.

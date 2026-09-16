@@ -1,7 +1,7 @@
 {
   "name": "ryugu-cauchy-gravity",
   "version": "0.1.0",
-  "description": "Four independent solvers for the gravity-gradient tensor of an arbitrary density field, compared on a 196,608-face model of asteroid (162173) Ryugu.",
+  "description": "Five independent solvers for the gravity-gradient tensor of an arbitrary density field, compared on a 196,608-face model of asteroid (162173) Ryugu.",
   "private": true,
   "license": "MIT",
   "repository": {

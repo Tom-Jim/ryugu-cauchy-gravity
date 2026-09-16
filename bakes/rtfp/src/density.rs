@@ -25,6 +25,10 @@ use crate::mesh::Mesh;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DensityMode {
     Cauchy,
+    /// Non-unit Cauchy exponents. The legacy jump-surface Carlson solver and
+    /// RT-FP's closed-form radial remainder deliberately do not consume this
+    /// model; CarlsonAlpha evaluates the general radial finite part instead.
+    Elliptic,
     Constant,
 }
 
@@ -32,8 +36,11 @@ impl DensityMode {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s {
             "cauchy" => Ok(Self::Cauchy),
+            "elliptic" => Ok(Self::Elliptic),
             "constant" => Ok(Self::Constant),
-            other => Err(format!("unknown density mode {other:?} (cauchy|constant)")),
+            other => Err(format!(
+                "unknown density mode {other:?} (cauchy|elliptic|constant)"
+            )),
         }
     }
 
@@ -41,6 +48,7 @@ impl DensityMode {
     pub fn tag(self) -> &'static str {
         match self {
             Self::Cauchy => "cauchy",
+            Self::Elliptic => "elliptic",
             Self::Constant => "constant",
         }
     }
@@ -52,6 +60,8 @@ pub enum Normalization {
     #[default]
     Rho0,
     TotalMass,
+    /// Keep the TOML kernel weights unchanged.
+    Raw,
 }
 
 impl Normalization {
@@ -59,7 +69,10 @@ impl Normalization {
         match s {
             "rho0" => Ok(Self::Rho0),
             "total_mass" | "total-mass" => Ok(Self::TotalMass),
-            other => Err(format!("unknown normalization {other:?} (rho0|total_mass)")),
+            "raw" => Ok(Self::Raw),
+            other => Err(format!(
+                "unknown normalization {other:?} (rho0|total_mass|raw)"
+            )),
         }
     }
 }
@@ -149,6 +162,15 @@ impl Density {
         mesh: &Mesh,
         normalization: Normalization,
     ) -> Result<Self, String> {
+        Self::from_toml_for_mode(path, mesh, normalization, DensityMode::Cauchy)
+    }
+
+    pub fn from_toml_for_mode(
+        path: &std::path::Path,
+        mesh: &Mesh,
+        normalization: Normalization,
+        mode: DensityMode,
+    ) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let raw: CauchyDensityFile =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -173,17 +195,27 @@ impl Density {
             1190.0
         };
         let total_mass_target = raw.total_mass_target.max(0.0);
-        if let Some(bad) = kernels.iter().find(|k| (k.alpha - 1.0).abs() > 1e-9) {
-            return Err(format!(
-                "kernel alpha={} unsupported: the closed-form radial integral is α=1 only \
-                 (general α would require a radial quadrature rule)",
-                bad.alpha
-            ));
+        if mode != DensityMode::Elliptic {
+            if let Some(bad) = kernels.iter().find(|k| (k.alpha - 1.0).abs() > 1e-9) {
+                return Err(format!(
+                    "kernel alpha={} unsupported: the closed-form radial integral is α=1 only \
+                     (use the elliptic density mode with CarlsonAlpha for general α)",
+                    bad.alpha
+                ));
+            }
         }
 
         // The volume integral is linear in the weights, so one pass with the raw
         // TOML weights gives both conventions at once.
-        let raw_mass = mass::kernel_field_mass(mesh, &kernels);
+        let raw_mass = if mode == DensityMode::Elliptic {
+            // `mass::kernel_field_mass` is the α=1 surface reduction. For the
+            // new model the raw weights are already the comparison scale and
+            // Mascon applies the same no-rescale rule, so both records stay on
+            // one budget without inventing a second mass quadrature.
+            0.0
+        } else {
+            mass::kernel_field_mass(mesh, &kernels)
+        };
         let rho0 = densitize(&kernels, &[0.0, 0.0, 0.0]);
         let rho0_scale = if rho0.abs() > 1e-30 {
             bulk_density / rho0
@@ -195,6 +227,7 @@ impl Density {
             Normalization::TotalMass if total_mass_target > 0.0 && raw_mass.abs() > 1e-30 => {
                 total_mass_target / raw_mass
             }
+            Normalization::Raw => 1.0,
             // No target in the TOML: fall back to the ρ(0) convention.
             Normalization::TotalMass => rho0_scale,
         };
@@ -248,7 +281,7 @@ impl Density {
     /// uniform-density term has to carry (the mesh boundary, not ρ, cuts the body).
     pub fn rho(&self, x: &[f64; 3], mode: DensityMode) -> f64 {
         match mode {
-            DensityMode::Cauchy => densitize(&self.kernels, x),
+            DensityMode::Cauchy | DensityMode::Elliptic => densitize(&self.kernels, x),
             DensityMode::Constant => self.bulk_density,
         }
     }

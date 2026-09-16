@@ -15,6 +15,11 @@
  */
 import { join, normalize, relative } from "node:path";
 import { bootCarlsonStatus, carlsonStatusResponse, startCarlsonBake } from "./solvers/carlson";
+import {
+  bootCarlsonAlphaStatus,
+  carlsonalphaStatusResponse,
+  startCarlsonAlphaBake,
+} from "./solvers/carlsonalpha";
 import { corsJson } from "./solvers/gpu_solver";
 import { bootMasconStatus, masconStatusResponse, startMasconBake } from "./solvers/mascon";
 import { bootRtfpStatus, rtfpStatusResponse, startRtfpBake } from "./solvers/rtfp";
@@ -54,8 +59,8 @@ type SolverRoute = {
 };
 
 /**
- * One entry per algorithm. Werner and mascon ignore `density`; RT-FP and
- * Carlson use it to pick between the Cauchy and constant-density records.
+ * One entry per algorithm. Werner ignores `density`; the other routes use it to
+ * select the density model and therefore the record they own.
  */
 const SOLVERS: Record<string, SolverRoute> = {
   "/api/werner": {
@@ -66,7 +71,7 @@ const SOLVERS: Record<string, SolverRoute> = {
   "/api/mascon": {
     boot: bootMasconStatus,
     status: masconStatusResponse,
-    start: ({ mode, standoffMm }) => startMasconBake(mode, standoffMm),
+    start: ({ mode, standoffMm, density }) => startMasconBake(mode, standoffMm, density),
   },
   "/api/rtfp": {
     boot: bootRtfpStatus,
@@ -77,6 +82,11 @@ const SOLVERS: Record<string, SolverRoute> = {
     boot: bootCarlsonStatus,
     status: carlsonStatusResponse,
     start: ({ mode, standoffMm, density }) => startCarlsonBake(mode, standoffMm, density),
+  },
+  "/api/carlsonalpha": {
+    boot: bootCarlsonAlphaStatus,
+    status: carlsonalphaStatusResponse,
+    start: ({ mode, standoffMm, density }) => startCarlsonAlphaBake(mode, standoffMm, density),
   },
 };
 

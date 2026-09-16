@@ -16,6 +16,7 @@
 mod analytic;
 mod bvh;
 mod carlson;
+mod carlson_alpha;
 mod density;
 mod esa;
 mod geom;
@@ -56,6 +57,10 @@ enum Solver {
     Ray,
     /// `H_ij = G Σ_F Δρ_F n_j I_F[i]` over the star-cone jump surfaces.
     Carlson,
+    /// General-alpha radial finite part with the Carlson symmetric-function
+    /// verification backend. Unlike [`Self::Ray`], this path accepts non-unit
+    /// Cauchy exponents.
+    CarlsonAlpha,
 }
 
 impl Solver {
@@ -63,7 +68,10 @@ impl Solver {
         match s {
             "ray" | "rtfp" => Ok(Self::Ray),
             "carlson" => Ok(Self::Carlson),
-            other => Err(format!("unknown solver {other:?} (ray|carlson)")),
+            "carlson-alpha" | "carlsonalpha" => Ok(Self::CarlsonAlpha),
+            other => Err(format!(
+                "unknown solver {other:?} (ray|carlson|carlson-alpha)"
+            )),
         }
     }
 }
@@ -113,7 +121,7 @@ fn parse_args() -> Result<Args, String> {
     };
     let mut it = std::env::args().skip(1);
     // Tracked so the Carlson defaults below never override an explicit path.
-    let (mut out_set, mut order_set) = (false, false);
+    let (mut out_set, mut order_set, mut normalize_set) = (false, false, false);
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
@@ -129,7 +137,10 @@ fn parse_args() -> Result<Args, String> {
             "--cache" => args.cache = PathBuf::from(value()?),
             "--density" => args.density = PathBuf::from(value()?),
             "--mode" => args.mode = DensityMode::parse(&value()?)?,
-            "--normalize" => args.normalize = Normalization::parse(&value()?)?,
+            "--normalize" => {
+                args.normalize = Normalization::parse(&value()?)?;
+                normalize_set = true;
+            }
             "--solver" => args.solver = Solver::parse(&value()?)?,
             "--directions" => {
                 args.directions = value()?.parse().map_err(|e| format!("--directions: {e}"))?
@@ -157,8 +168,8 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => {
                 println!(
                     "rtfp-bake --obj mesh.obj [--out path] [--order path] [--cache path]\n\
-                     \x20         [--density toml] [--mode cauchy|constant] [--normalize rho0|total_mass]\n\
-                     \x20         [--solver ray|carlson] [--standoff-mm 1..32000] [--directions 288]\n\
+                     \x20         [--density toml] [--mode cauchy|elliptic|constant] [--normalize rho0|total_mass|raw]\n\
+                     \x20         [--solver ray|carlson|carlson-alpha] [--standoff-mm 1..32000] [--directions 288]\n\
                      \x20         [--resume] [--selftest]"
                 );
                 std::process::exit(0);
@@ -184,6 +195,26 @@ fn parse_args() -> Result<Args, String> {
         // `--cache` is not consulted on this path: the Carlson face list depends on
         // the density field, so its analytic pass cannot be replayed per standoff.
     }
+    if args.solver == Solver::CarlsonAlpha {
+        if !out_set {
+            args.out = r.join(format!(
+                "assets/records/carlsonalpha_{}_faces.bin",
+                args.mode.tag()
+            ));
+        }
+        if !order_set {
+            args.order = r.join(format!(
+                "assets/records/.carlsonalpha_{}_order.bin",
+                args.mode.tag()
+            ));
+        }
+        // The fractional-Cauchy TOML carries raw weights and Mascon keeps that
+        // scale when total_mass_target is zero. Match it unless the caller
+        // explicitly requested another convention.
+        if args.mode == DensityMode::Elliptic && !normalize_set {
+            args.normalize = Normalization::Raw;
+        }
+    }
     Ok(args)
 }
 
@@ -201,6 +232,7 @@ fn main() -> ExitCode {
         match args.solver {
             Solver::Ray => run(&args),
             Solver::Carlson => run_carlson(&args),
+            Solver::CarlsonAlpha => run_raylike(&args, true),
         }
     };
     match result {
@@ -308,7 +340,101 @@ fn selftest(args: &Args) -> Result<(), String> {
     selftest_mass()?;
     selftest_surface_form(args)?;
     selftest_carlson(args)?;
+    selftest_carlson_alpha(args)?;
     selftest_gpu(args)
+}
+
+/// General-alpha radial finite part against the f64 reference and the Carlson
+/// symmetric-function library. This is the check that keeps `CarlsonAlpha`
+/// distinct from the alpha=1 jump-surface implementation.
+fn selftest_carlson_alpha(args: &Args) -> Result<(), String> {
+    use crate::carlson_alpha::special;
+    let pi = std::f64::consts::PI;
+    let rf = special::rf(0.0, 1.0, 1.0)?;
+    let rd = special::rd(0.0, 1.0, 1.0)?;
+    let rc = special::rc(0.0, 1.0)?;
+    let rj = special::rj(1.0, 1.0, 1.0, 1.0)?;
+    let tail = carlson_alpha::third_kind_tail(1.0, 2.0, 3.0, 4.0)?;
+    println!("  Carlson library: RF={rf:.12} RD={rd:.12} RC={rc:.12} RJ={rj:.12} tail={tail:.12}");
+    if (rf - pi / 2.0).abs() > 1e-12
+        || (rd - 3.0 * pi / 4.0).abs() > 1e-12
+        || (rc - pi / 2.0).abs() > 1e-12
+        || (rj - 1.0).abs() > 1e-12
+        || !tail.is_finite()
+    {
+        return Err("Carlson library identity check failed".into());
+    }
+
+    let mesh = unit_cube();
+    let faces = analytic::precompute(&mesh);
+    let bvh = bvh::Bvh::build(&mesh);
+    let points = mesh.observation_points(1e-2);
+    let sample: Vec<[f64; 3]> = (0..24).map(|i| points[i * points.len() / 24]).collect();
+    let dirs = quadrature::directions(args.directions.min(256));
+    let kernel = crate::density::KernelSi {
+        c: [0.1, -0.1, 0.2],
+        sigma: 0.8,
+        w: 1.0,
+        alpha: 1.25,
+    };
+    let device = gpu::Device::new()?;
+    let scene = gpu::Scene::new(device, &mesh, &bvh, &faces, &sample, &dirs, sample.len(), 1);
+    let radius = body_radius(&mesh);
+    let t_max = radius * 4.0;
+    let gpu = scene.block_carlson_alpha(
+        &sample,
+        &dirs,
+        std::slice::from_ref(&kernel),
+        t_max as f32,
+        GEOM_EPS_M as f32,
+    )?;
+
+    let mut hits = Vec::new();
+    let mut errs = Vec::new();
+    for (i, x) in sample.iter().enumerate() {
+        // `block_carlson_alpha` returns the regularized radial remainder only.
+        // The analytic uniform-density tensor belongs to the separate near-field
+        // term, so comparing it against a full `rho·W + remainder` reference
+        // would manufacture a large false disagreement.
+        let mut want = [0.0; 6];
+        for (u, omega) in &dirs {
+            geom::bvh_crossings(
+                &bvh,
+                &mesh,
+                *x,
+                [-u[0], -u[1], -u[2]],
+                GEOM_EPS_M,
+                t_max,
+                &mut hits,
+            );
+            let (slots, overflow) = split::intervals(&hits, false);
+            if overflow {
+                return Err("alpha selftest ray exceeded interval capacity".into());
+            }
+            let intervals: Vec<(f64, f64)> = slots.iter().flatten().copied().collect();
+            let scalar = carlson_alpha::remainder_scalar_reference(
+                std::slice::from_ref(&kernel),
+                *x,
+                *u,
+                &intervals,
+            );
+            tensor::add_tensor_term(&mut want, u, G * *omega * scalar);
+        }
+        errs.push(rel6(&gpu[i], &want));
+    }
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let worst = errs[errs.len() - 1];
+    println!(
+        "  CarlsonAlpha alpha=1.25 GPU vs f64/Carlson reference: median {:.3e}, worst {:.3e}",
+        errs[errs.len() / 2],
+        worst
+    );
+    if worst.is_nan() || worst > 2e-2 {
+        return Err(format!(
+            "CarlsonAlpha general-alpha GPU path disagrees by {worst:.3e}"
+        ));
+    }
+    Ok(())
 }
 
 /// The identity the Carlson solver rests on, checked end-to-end on the real mesh:
@@ -541,6 +667,9 @@ fn selftest_gpu(args: &Args) -> Result<(), String> {
     let dirs = quadrature::directions(args.directions);
     let density = match args.mode {
         DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Elliptic => {
+            return Err("mode=elliptic requires --solver carlson-alpha".into());
+        }
         DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
     let kernels = density.kernels();
@@ -665,16 +794,22 @@ fn print_mass_report(density: &Density, mode: DensityMode) {
         m.volume
     );
     match mode {
-        DensityMode::Cauchy => {
+        DensityMode::Cauchy | DensityMode::Elliptic => {
             let target = if m.target_mass > 0.0 {
                 format!("{:.6e} kg", m.target_mass)
             } else {
                 "absent from TOML".to_string()
             };
-            println!(
-                "  raw TOML weights: ∫ρ dV = {:.6e} kg  →  ρ(0)=1190 convention ×{:.9e} = {:.6e} kg",
-                m.raw_mass, m.rho0_scale, m.rho0_mass
-            );
+            if mode == DensityMode::Cauchy {
+                println!(
+                    "  raw TOML weights: ∫ρ dV = {:.6e} kg  →  ρ(0)=1190 convention ×{:.9e} = {:.6e} kg",
+                    m.raw_mass, m.rho0_scale, m.rho0_mass
+                );
+            } else {
+                println!(
+                    "  elliptic fractional-alpha field: weights kept raw, scale is shared with Mascon"
+                );
+            }
             println!(
                 "  normalization={:?}: ×{:.9e} = {:.6e} kg (target {target})",
                 m.normalization, m.applied_scale, m.applied_mass
@@ -818,6 +953,10 @@ fn decode_cache(bytes: &[u8], n_points: usize, standoff_mm: f64) -> Option<Vec<S
 }
 
 fn run(args: &Args) -> Result<(), String> {
+    run_raylike(args, false)
+}
+
+fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
     let standoff_m = args.standoff_mm * 1e-3;
     let mesh =
         Mesh::load_obj(&args.obj, KM_TO_M).map_err(|e| format!("{}: {e}", args.obj.display()))?;
@@ -825,7 +964,16 @@ fn run(args: &Args) -> Result<(), String> {
     let nf = mesh.face_count();
     println!("observation standoff: {:.3} mm", args.standoff_mm);
     println!("mesh: {nv} vertices, {nf} faces (meters)");
-    println!("mode={:?} directions={}", args.mode, args.directions);
+    println!(
+        "solver={} mode={:?} directions={}",
+        if general_alpha {
+            "carlson-alpha"
+        } else {
+            "rtfp"
+        },
+        args.mode,
+        args.directions
+    );
     std::io::Write::flush(&mut std::io::stdout()).ok();
 
     let points = mesh.observation_points(standoff_m);
@@ -838,6 +986,9 @@ fn run(args: &Args) -> Result<(), String> {
 
     let density = match args.mode {
         DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Elliptic => {
+            Density::from_toml_for_mode(&args.density, &mesh, args.normalize, args.mode)?
+        }
         DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
     print_mass_report(&density, args.mode);
@@ -904,7 +1055,11 @@ fn run(args: &Args) -> Result<(), String> {
     if !todo.is_empty() {
         for lo in (0..nv).step_by(POINTS_PER_BLOCK) {
             let hi = (lo + POINTS_PER_BLOCK).min(nv);
-            let remainder = scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?;
+            let remainder = if general_alpha {
+                scene.block_carlson_alpha(&points[lo..hi], &dirs, kernels, t_max, t_min)?
+            } else {
+                scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?
+            };
             for (i, rem) in remainder.into_iter().enumerate() {
                 let vi = lo + i;
                 if !needed[vi] {
@@ -1023,6 +1178,9 @@ fn run_carlson(args: &Args) -> Result<(), String> {
     let density = match args.mode {
         DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
         DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
+        DensityMode::Elliptic => {
+            return Err("mode=elliptic requires --solver carlson-alpha".into());
+        }
     };
     print_mass_report(&density, args.mode);
 

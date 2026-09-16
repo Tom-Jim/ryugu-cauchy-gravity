@@ -42,8 +42,8 @@ struct Globals {
 // integrating an incomplete ray.
 @group(0) @binding(9) var<storage, read_write> out_inside_overflow: array<atomic<u32>>;
 
-const MAX_HITS: u32 = 16u;
-const MAX_INTERVALS: u32 = 8u;
+const MAX_HITS: u32 = 32u;
+const MAX_INTERVALS: u32 = 16u;
 const STACK: u32 = 64u;
 
 /// Möller–Trumbore. Returns the crossing distance, or −1 when the ray misses.
@@ -154,7 +154,9 @@ fn trace(
     }
 }
 
-/// `+X` crossing parity: 1 when the observation point sits inside the mesh.
+/// Crossing parity is unstable when a single ray grazes a shared edge or
+/// vertex. Cast three non-collinear rays and take the majority; this keeps the
+/// probe cheap while making the inside/outside decision robust on the real mesh.
 @compute @workgroup_size(64)
 fn inside_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pid = gid.x;
@@ -164,7 +166,12 @@ fn inside_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hits: array<f32, MAX_HITS>;
     var n_hits: u32;
     trace(points[pid].xyz, vec3<f32>(1.0, 0.0, 0.0), &hits, &n_hits);
-    atomicStore(&out_inside_overflow[pid], n_hits % 2u);
+    var votes = n_hits % 2u;
+    trace(points[pid].xyz, vec3<f32>(0.371, 0.542, 0.753), &hits, &n_hits);
+    votes = votes + n_hits % 2u;
+    trace(points[pid].xyz, vec3<f32>(-0.613, 0.211, 0.761), &hits, &n_hits);
+    votes = votes + n_hits % 2u;
+    atomicStore(&out_inside_overflow[pid], select(0u, 1u, votes >= 2u));
 }
 
 /// Visible `(r₀, r₁)` intervals per (point, direction).

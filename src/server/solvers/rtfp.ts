@@ -18,16 +18,21 @@ const DIRECTIONS = Number(process.env.RTFP_DIRECTIONS ?? 288);
 export const rtfp = createGpuSolver({
   id: "ray",
   label: "RT-FP",
+  defaultDensity: "cauchy",
   outByMode: {
     cauchy: join(ROOT, "assets/records/rtfp_faces.bin"),
     constant: join(ROOT, "assets/records/rtfp_constant_faces.bin"),
+  },
+  densityByMode: {
+    cauchy: join(ROOT, "assets/density/cauchy.toml"),
+    constant: join(ROOT, "assets/density/cauchy.toml"),
   },
   order: join(ROOT, "assets/records/.rtfp_order.bin"),
   log: join(ROOT, "assets/records/.rtfp_progress.log"),
   extraArgs: [],
   // The direction count only enters the Cauchy remainder quadrature; the
   // constant-density control case has no kernels, so it needs no directions.
-  modeArgs: { cauchy: ["--directions", String(DIRECTIONS)] },
+  modeArgs: { cauchy: ["--directions", String(DIRECTIONS)], constant: [] },
 });
 
 export const bootRtfpStatus = () => rtfp.boot();

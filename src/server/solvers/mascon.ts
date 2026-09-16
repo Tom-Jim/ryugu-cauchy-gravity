@@ -11,7 +11,7 @@
  * progress dialect, different failure modes — but it writes the same RHGF v5
  * record, so the viewer and the comparison panel treat it identically.
  */
-import { existsSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { corsJson } from "./gpu_solver";
 
@@ -20,11 +20,30 @@ const MASCON_BIN = join(ROOT, "bakes/build/ryugu_mascon_bake_cpp");
 const MASCON_OBJ =
   Bun.env.BAKE_OBJ ??
   join(ROOT, "../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj");
-const MASCON_OUT = join(ROOT, "assets/records/mascon_faces.bin");
-const MASCON_ORDER = join(ROOT, "assets/records/.mascon_order.bin");
-const MASCON_LOG = join(ROOT, "assets/records/.mascon_progress.log");
-const MASCON_DENSITY = join(ROOT, "assets/density/cauchy.toml");
 const MASCON_MAGIC = 0x52484746;
+
+type MasconDensityMode = "cauchy" | "elliptic";
+
+const MASCON_DEFAULT_DENSITY: MasconDensityMode = "elliptic";
+const MASCON_DENSITIES: Record<
+  MasconDensityMode,
+  { out: string; order: string; log: string; density: string; label: string }
+> = {
+  cauchy: {
+    out: join(ROOT, "assets/records/mascon_faces.bin"),
+    order: join(ROOT, "assets/records/.mascon_order.bin"),
+    log: join(ROOT, "assets/records/.mascon_progress.log"),
+    density: join(ROOT, "assets/density/cauchy.toml"),
+    label: "Cauchy",
+  },
+  elliptic: {
+    out: join(ROOT, "assets/records/mascon_elliptic_faces.bin"),
+    order: join(ROOT, "assets/records/.mascon_elliptic_order.bin"),
+    log: join(ROOT, "assets/records/.mascon_elliptic_progress.log"),
+    density: join(ROOT, "assets/density/cauchy_elliptic.toml"),
+    label: "fractional Cauchy",
+  },
+};
 /**
  * 192³ halved the discretisation gap against RT-FP (0.711 % → 0.297 % median at
  * a 16 m standoff), matching the values quoted in the C++ bake.
@@ -52,6 +71,7 @@ export type MasconStatus = {
 let masconChild: ReturnType<typeof Bun.spawn> | null = null;
 /** Observation-surface height (mm) of the current record / run. */
 let masconStandoffMm = MASCON_STANDOFF_DEFAULT_MM;
+let masconDensityMode: MasconDensityMode = MASCON_DEFAULT_DENSITY;
 let masconStatus: MasconStatus = {
   state: "idle",
   current: 0,
@@ -68,9 +88,81 @@ function clampStandoffMm(mm: unknown): number {
   return Math.min(MASCON_STANDOFF_MAX_MM, Math.max(1, v));
 }
 
-/** Status payload plus the observation height the record was baked at. */
-function masconPayload(): MasconStatus & { standoffMm: number; done: boolean } {
-  return { ...masconStatus, standoffMm: masconStandoffMm, done: masconStatus.state === "done" };
+function isMasconDensity(value: unknown): value is MasconDensityMode {
+  return value === "cauchy" || value === "elliptic";
+}
+
+function bootMasconDensity(): MasconDensityMode {
+  let best: { mode: MasconDensityMode; partial: boolean; mtime: number } | null = null;
+  let defaultComplete = false;
+  for (const mode of Object.keys(MASCON_DENSITIES) as MasconDensityMode[]) {
+    const path = MASCON_DENSITIES[mode].out;
+    if (!existsSync(path)) continue;
+    const cp = readMasconCheckpoint(path);
+    if (!cp.ok) continue;
+    if (mode === MASCON_DEFAULT_DENSITY && cp.done) defaultComplete = true;
+    let mtime = 0;
+    try {
+      mtime = statSync(path).mtimeMs;
+    } catch {
+      /* the record disappeared between existsSync and statSync */
+    }
+    const candidate = {
+      mode,
+      partial: cp.current > 0 && !cp.done,
+      mtime,
+    };
+    if (
+      !best
+      || (candidate.partial && !best.partial)
+      || (candidate.partial === best.partial && candidate.mtime > best.mtime)
+    ) {
+      best = candidate;
+    }
+  }
+  if (best?.partial) return best.mode;
+  if (defaultComplete) return MASCON_DEFAULT_DENSITY;
+  return best?.mode ?? MASCON_DEFAULT_DENSITY;
+}
+
+function paths(mode = masconDensityMode) {
+  return MASCON_DENSITIES[mode];
+}
+
+/** Status payload plus the observation height and per-density records. */
+function masconPayload(): MasconStatus & {
+  standoffMm: number;
+  densityMode: MasconDensityMode;
+  done: boolean;
+  records: Record<string, {
+    exists: boolean;
+    current: number;
+    total: number;
+    done: boolean;
+    standoffMm: number;
+  }>;
+} {
+  return {
+    ...masconStatus,
+    standoffMm: masconStandoffMm,
+    densityMode: masconDensityMode,
+    done: masconStatus.state === "done",
+    records: Object.fromEntries(
+      (Object.keys(MASCON_DENSITIES) as MasconDensityMode[]).map((mode) => {
+        const cp = readMasconCheckpoint(paths(mode).out);
+        return [
+          mode,
+          {
+            exists: cp.ok,
+            current: cp.current,
+            total: cp.total,
+            done: cp.done,
+            standoffMm: cp.standoffMm,
+          },
+        ];
+      }),
+    ),
+  };
 }
 
 function externalMasconPid(): number | null {
@@ -181,7 +273,7 @@ function parseMasconProgress(text: string) {
   }
 }
 
-function readMasconCheckpoint(): {
+function readMasconCheckpoint(outPath = paths().out): {
   ok: boolean;
   current: number;
   total: number;
@@ -189,11 +281,11 @@ function readMasconCheckpoint(): {
   canResume: boolean;
   standoffMm: number;
 } {
-  if (!existsSync(MASCON_OUT)) {
+  if (!existsSync(outPath)) {
     return { ok: false, current: 0, total: 0, done: false, canResume: false, standoffMm: 0 };
   }
   try {
-    const buf = readFileSync(MASCON_OUT);
+    const buf = readFileSync(outPath);
     if (buf.byteLength < 28) {
       return { ok: false, current: 0, total: 0, done: false, canResume: false, standoffMm: 0 };
     }
@@ -289,7 +381,8 @@ function applyMasconCheckpoint() {
 }
 
 function clearMasconRecords() {
-  for (const p of [MASCON_OUT, MASCON_ORDER, MASCON_LOG]) {
+  const selected = paths();
+  for (const p of [selected.out, selected.order, selected.log]) {
     try {
       if (existsSync(p)) unlinkSync(p);
     } catch {
@@ -311,14 +404,15 @@ async function writeMasconStub(totalFaces = 196608, standoffMm = masconStandoffM
   for (let i = 0; i < totalFaces; i++) {
     buf.writeFloatLE(Number.NaN, 28 + i * 4);
   }
-  await Bun.write(MASCON_OUT, buf);
+  await Bun.write(paths().out, buf);
 }
 
 export function bootMasconStatus() {
+  masconDensityMode = bootMasconDensity();
   applyMasconCheckpoint();
-  if (existsSync(MASCON_LOG)) {
+  if (existsSync(paths().log)) {
     try {
-      parseMasconProgress(readFileSync(MASCON_LOG, "utf8"));
+      parseMasconProgress(readFileSync(paths().log, "utf8"));
     } catch {
       /* ignore */
     }
@@ -339,9 +433,9 @@ export function bootMasconStatus() {
 }
 
 export function masconStatusResponse(): Response {
-  if (existsSync(MASCON_LOG)) {
+  if (existsSync(paths().log)) {
     try {
-      parseMasconProgress(readFileSync(MASCON_LOG, "utf8"));
+      parseMasconProgress(readFileSync(paths().log, "utf8"));
     } catch {
       /* ignore */
     }
@@ -361,6 +455,7 @@ export function masconStatusResponse(): Response {
 export async function startMasconBake(
   mode: "restart" | "resume",
   requestedStandoffMm?: number,
+  requestedDensity?: string,
 ): Promise<Response> {
   // Drop stale in-memory "running" when the OS process is already gone.
   if (!isMasconRunning() && masconStatus.state === "running") {
@@ -381,6 +476,26 @@ export async function startMasconBake(
     // the UI sticks on stale progress and then jumps to 100%.
     stopMasconBake();
   }
+  // Resume and restart can both select a record density. An explicit but
+  // unsupported value is rejected instead of silently switching models.
+  if (requestedDensity !== undefined && !isMasconDensity(requestedDensity)) {
+    masconStatus = {
+      state: "error",
+      current: 0,
+      total: 0,
+      percent: 0,
+      message: "Density mode unsupported",
+      error: `Mascon cannot evaluate density ${JSON.stringify(requestedDensity)}`,
+      canResume: false,
+    };
+    return corsJson(masconPayload(), 400);
+  }
+  if (isMasconDensity(requestedDensity)) {
+    masconDensityMode = requestedDensity;
+  } else if (mode === "restart") {
+    masconDensityMode = MASCON_DEFAULT_DENSITY;
+  }
+  const selected = paths();
   if (!existsSync(MASCON_BIN)) {
     masconStatus = {
       state: "error",
@@ -405,14 +520,14 @@ export async function startMasconBake(
     };
     return corsJson(masconPayload(), 500);
   }
-  if (!existsSync(MASCON_DENSITY)) {
+  if (!existsSync(selected.density)) {
     masconStatus = {
       state: "error",
       current: 0,
       total: 0,
       percent: 0,
       message: "Density TOML missing",
-      error: `missing ${MASCON_DENSITY}`,
+      error: `missing ${selected.density}`,
       canResume: false,
     };
     return corsJson(masconPayload(), 500);
@@ -436,7 +551,9 @@ export async function startMasconBake(
         total: cp.total,
         percent: 0,
         message: "No resumable record",
-        error: 'press "Recompute" first, or check assets/records/mascon_faces.bin',
+        error: `press "Recompute" first, or check ${
+          selected.out.replace(`${ROOT}/`, "")
+        }`,
         canResume: false,
       };
       return corsJson(masconPayload(), 400);
@@ -458,7 +575,7 @@ export async function startMasconBake(
     await writeMasconStub(196608, usedStandoffMm);
   }
 
-  await Bun.write(MASCON_LOG, "");
+  await Bun.write(selected.log, "");
   const cp0 = mode === "resume" ? readMasconCheckpoint() : { current: 0, total: 196608 };
   masconStatus = {
     state: "running",
@@ -472,8 +589,8 @@ export async function startMasconBake(
           : 0,
     message:
       mode === "resume"
-        ? `Resuming mascon voxel direct sum · standoff ${usedStandoffMm} mm`
-        : `Starting mascon voxel direct sum · standoff ${usedStandoffMm} mm`,
+        ? `Resuming mascon voxel direct sum · ${selected.label} density · standoff ${usedStandoffMm} mm`
+        : `Starting mascon voxel direct sum · ${selected.label} density · standoff ${usedStandoffMm} mm`,
     error: "",
     canResume: false,
   };
@@ -483,11 +600,11 @@ export async function startMasconBake(
     "--obj",
     MASCON_OBJ,
     "--out",
-    MASCON_OUT,
+    selected.out,
     "--order",
-    MASCON_ORDER,
+    selected.order,
     "--density",
-    MASCON_DENSITY,
+    selected.density,
     "--grid",
     String(MASCON_GRID),
     "--standoff-mm",
@@ -517,7 +634,7 @@ export async function startMasconBake(
           const chunk = dec.decode(value, { stream: true });
           chain = chain.then(async () => {
             buf += chunk;
-            await Bun.write(MASCON_LOG, buf);
+            await Bun.write(selected.log, buf);
             parseMasconProgress(buf);
             applyMasconCheckpoint();
             if (isMasconRunning()) masconStatus.state = "running";
@@ -530,9 +647,9 @@ export async function startMasconBake(
     await Promise.all([append(proc.stdout), append(proc.stderr)]);
     const code = await proc.exited;
     masconChild = null;
-    if (existsSync(MASCON_LOG)) {
+    if (existsSync(selected.log)) {
       try {
-        parseMasconProgress(readFileSync(MASCON_LOG, "utf8"));
+        parseMasconProgress(readFileSync(selected.log, "utf8"));
       } catch {
         /* ignore */
       }

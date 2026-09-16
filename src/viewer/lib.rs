@@ -1,9 +1,10 @@
 //! Ryugu WebGPU viewer.
 //!
-//! Every algorithm (Werner, Mascon, RT-FP) bakes to disk through its own
-//! server-spawned solver and hands the viewer an RHGF v5 face record; this crate
-//! only paints it. There is no in-browser solver left — the RT-FP WGSL compute
-//! shaders live in `bakes/rtfp/shaders/` and run in the bake process.
+//! Every algorithm (Werner, Mascon, RT-FP, Carlson and CarlsonAlpha) bakes to
+//! disk through its own server-spawned solver and hands the viewer an RHGF v5
+//! face record; this crate only paints it. There is no in-browser solver left:
+//! the GPU WGSL compute shaders live in `bakes/rtfp/shaders/` and run in the
+//! bake process.
 
 mod gradient;
 
@@ -278,9 +279,9 @@ fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
         }
     }
 
-    // Recompute the percentile stretch whenever the record content changes. Four
-    // completed algorithms can have the same finite count while every scalar
-    // differs, so finite count alone is not a record identity.
+    // Recompute the percentile stretch whenever the record content changes.
+    // Different completed records can have the same finite count while every
+    // scalar differs, so finite count alone is not a record identity.
     if full_recolor {
         // Same window rule as the RT-FP path, derived from the raw face scalars:
         // equal values therefore map to equal colours in every viewer.

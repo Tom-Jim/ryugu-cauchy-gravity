@@ -34,7 +34,7 @@ struct Dir {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 // Visible (r₀, r₁) slots per (point, direction), written by `rays.wgsl`.
-const MAX_INTERVALS: u32 = 8u;
+const MAX_INTERVALS: u32 = 16u;
 @group(0) @binding(1) var<storage, read> ivals: array<vec2<f32>>;
 // Visible-interval count per (point, direction).
 @group(0) @binding(2) var<storage, read> counts: array<u32>;

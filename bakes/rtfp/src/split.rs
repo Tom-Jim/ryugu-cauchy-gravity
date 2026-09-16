@@ -28,7 +28,7 @@
 use crate::density::KernelSi;
 
 /// Interval slots per (point, direction); mirrors `MAX_INTERVALS` in `rays.wgsl`.
-pub const MAX_INTERVALS: usize = 8;
+pub const MAX_INTERVALS: usize = 16;
 
 /// `D(R) = A − 2σ²bR + σ²R²`.
 #[inline]

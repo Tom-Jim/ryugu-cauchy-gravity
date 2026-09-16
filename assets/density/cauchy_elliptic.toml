@@ -1,0 +1,40 @@
+# =============================================================================
+# Ryugu elliptic-Cauchy stress model.
+#
+# rho(y) = sum_k w_k * [1 + sigma_k^2 ||y - c_k||^2]^(-alpha_k)
+#
+# This model deliberately uses alpha != 1. The legacy RT-FP radial remainder
+# and the Carlson jump-surface representation only admit alpha = 1, so they
+# reject this file. Mascon samples the field directly and CarlsonAlpha
+# integrates the general radial finite part on the GPU.
+#
+# The weights are used as written (`--normalize raw`). Mascon does the same
+# when total_mass_target is zero, so the two records share one density scale.
+# =============================================================================
+type = "cauchy_kernels"
+alpha_default = 1.25
+model_id = "ryugu_fractional_cauchy_elliptic_v1"
+total_mass_target = 0.0
+bulk_density_ref = 1190.0
+homogeneous = false
+design_goal = "fractional_cauchy_for_general_alpha_solvers"
+notes = "Designed stress case for non-unit Cauchy exponents. Not an observationally derived Ryugu interior."
+
+kernels = [
+  { role = "E0_broad_matrix", c = [0.0000, 0.0000, 0.0000], sigma = 0.35, w = 1050.0, alpha = 1.25 },
+  { role = "E1_broad_core", c = [0.0000, 0.0000, 0.0000], sigma = 2.50, w = 80.0, alpha = 0.75 },
+  { role = "E1b_hub_comp", c = [0.0000, 0.0000, 0.0000], sigma = 5.00, w = -34.0, alpha = 1.10 },
+
+  { role = "E2_belt_000", c = [0.1900, 0.0000, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+  { role = "E2_belt_060", c = [0.0950, 0.1645, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+  { role = "E2_belt_120", c = [-0.0950, 0.1645, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+  { role = "E2_belt_180", c = [-0.1900, 0.0000, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+  { role = "E2_belt_240", c = [-0.0950, -0.1645, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+  { role = "E2_belt_300", c = [0.0950, -0.1645, 0.0], sigma = 8.0, w = 18.0, alpha = 1.50 },
+
+  { role = "E3_polar_north", c = [0.0000, 0.0000, 0.2500], sigma = 6.0, w = -28.0, alpha = 2.00 },
+  { role = "E3_polar_south", c = [0.0000, 0.0000, -0.2400], sigma = 6.0, w = -28.0, alpha = 2.00 },
+
+  { role = "E4_ore_body", c = [0.0800, 0.0500, 0.1500], sigma = 11.0, w = 22.0, alpha = 2.25 },
+  { role = "E4_void", c = [-0.0700, 0.0600, -0.1450], sigma = 11.0, w = -20.0, alpha = 1.75 },
+]

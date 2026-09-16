@@ -13,12 +13,12 @@
 <p align="center">
   <a href="https://github.com/Tom-Jim/ryugu-cauchy-gravity"><img alt="Browse the source on GitHub" src="https://img.shields.io/badge/GITHUB-SOURCE-181717?style=for-the-badge&logo=github&logoColor=white"></a>
   <a href="https://tom-jim.github.io/ryugu-cauchy-gravity/"><img alt="Open the interactive WebGPU demo" src="https://img.shields.io/badge/OPEN_THE_INTERACTIVE_WEBGPU_DEMO-0f766e?style=for-the-badge"></a><br>
-  <sub>Browse the source or launch the browser demo and compare all four solvers.</sub>
+  <sub>Browse the source or launch the browser demo and compare all five solvers.</sub>
 </p>
 
 ## Preview
 
-All four solvers render the same record format through the same colour window,
+All solvers render the same record format through the same colour window,
 at the same observation height, so the images below are directly comparable.
 
 | **Carlson · Cauchy · 16 m** | **RT-FP · Cauchy · 16 m** |
@@ -37,22 +37,25 @@ that both exact solvers reproduce to `4 × 10⁻⁷`.
 | **Mascon · Cauchy · 1 mm** | **Mascon failure mode** |
 | [![Mascon, Cauchy density, 1 mm](docs/images/mascon-cauchy-1mm.png)](docs/images/mascon-cauchy-1mm.png) | At 1 mm the voxel record dissolves into per-cell speckle. This is a solver limitation at a standoff far below the cell size, not a rendering artefact. |
 
-Four independent solvers for the **gravity-gradient tensor** (the Hessian of the
+Five independent algorithms for the **gravity-gradient tensor** (the Hessian of the
 gravitational potential) of a body with a **non-uniform interior**, compared on
 one shape model of asteroid (162173) Ryugu.
 
 The point of the repository is not one solver but the agreement between them.
-All four evaluate the same 196,608-face mesh, from the same observation surface,
-on the same total-mass budget, and write the same per-face record. The viewer
-renders every solver through one identical display path, so a difference on
-screen is a difference between solvers and nothing else.
+All five evaluate the same 196,608-face mesh from the same observation surface
+and write the same per-face record. The four `α = 1` records share one
+total-mass budget; the fractional-Cauchy pair keeps the TOML weights unchanged
+so Mascon and CarlsonAlpha use one common scale. The viewer renders every solver
+through one identical display path, so a difference on screen is a difference
+between solvers and nothing else.
 
 | Solver | Method | Density | Where it runs |
 | --- | --- | --- | --- |
 | **Werner** | Closed-form polyhedral tensor (the ESA reference library) | uniform | host, multithreaded C++ |
 | **Mascon** | Voxel direct sum over 192³ point masses | arbitrary | host, multithreaded C++ |
-| **RT-FP** | Analytic near field plus a directional quadrature of the radial remainder | arbitrary | GPU, WGSL |
+| **RT-FP** | Analytic near field plus a directional quadrature of the radial remainder | Cauchy, α=1 | GPU, WGSL |
 | **Carlson** | Density jump surfaces over a star-cone decomposition, evaluated by the polyhedral surface integral | piecewise constant | GPU, WGSL |
+| **CarlsonAlpha** | General-α radial finite part with Carlson-library verification | Cauchy, arbitrary positive α | GPU, WGSL |
 
 ## Results
 
@@ -65,8 +68,10 @@ faces, observation surface 16 m above the terrain, Ryugu mass 4.5 × 10¹¹ kg.
 | **Carlson vs RT-FP** | yes (Cauchy field) | **0.115 %** | 0.28 % | 0.51 % | 24.6 % | 56 |
 | RT-FP vs Mascon | yes (Cauchy field) | 0.297 % | 0.79 % | 1.51 % | 96.2 % | 204 |
 | Carlson vs Mascon | yes (Cauchy field) | 0.316 % | 0.84 % | 1.61 % | 96.2 % | 255 |
+| **CarlsonAlpha vs Mascon** | yes (fractional Cauchy field, α ≠ 1) | **0.304 %** | 0.81 % | 1.55 % | 96.3 % | 203 |
 | **RT-FP vs Werner** | yes (uniform) | **4.49 × 10⁻⁷** | 1.1 × 10⁻⁶ | 1.8 × 10⁻⁶ | 3.5 × 10⁻⁶ | 0 |
 | **Carlson vs Werner** | yes (uniform) | **4.48 × 10⁻⁷** | 1.1 × 10⁻⁶ | 1.8 × 10⁻⁶ | 3.4 × 10⁻⁶ | 0 |
+| **CarlsonAlpha vs Werner** | yes (uniform) | **4.49 × 10⁻⁷** | 1.1 × 10⁻⁶ | 1.8 × 10⁻⁶ | 3.5 × 10⁻⁶ | 0 |
 
 Read the two halves separately.
 
@@ -76,12 +81,14 @@ round-off of the 32-bit record these results are stored in. Two formulations
 that share no numerical machinery beyond the mesh agree with a third
 implementation to the precision of the file format.
 
-*On the varying field*, the two GPU solvers agree with each other to 0.12 %
-median, while the voxel solver sits 0.30 % away — a median difference two and a
-half times larger from a solver that is also far heavier. The tails differ much
-more than the medians: Carlson and RT-FP stay inside 0.51 % for 99 % of faces,
-whereas mascon has 204 faces (0.1 %) beyond 5 %, with individual faces off by
-96 %. Mascon's error is not a smooth bias that a calibration could absorb; it is
+*On the varying field*, the two `α = 1` GPU solvers agree with each other to
+0.12 % median, while the voxel solver sits 0.30 % away — a median difference two
+and a half times larger from a solver that is also far heavier. The generalized
+CarlsonAlpha path reproduces the same fractional-Cauchy Mascon record to 0.30 %
+median, without falling back to `α = 1`. The tails differ much more than the
+medians: Carlson and RT-FP stay inside 0.51 % for 99 % of `α = 1` faces, whereas
+Mascon has about 0.1 % of faces beyond 5 %, with individual faces off by 96 %.
+Mascon's error is not a smooth bias that a calibration could absorb; it is
 concentrated where the local terrain is closest to a cell centre.
 
 ### The same comparison at 1 mm
@@ -193,7 +200,7 @@ The two cross-solver rows are sampled checks on a fixed probe set, not the full
 mesh, so they read slightly worse than the all-face table at the top; both are
 gated by the same `6 × 10⁻²` worst-case limit.
 
-Two honest caveats, both visible in the table above:
+Three honest caveats, all visible in the table above:
 
 * The WGSL ray/remainder path has rare outliers — 2 of 192 probe points exceeded
   5 % — on samples placed exactly on a face plane, where the ray hits a
@@ -205,33 +212,34 @@ Two honest caveats, both visible in the table above:
   constant-density term; it is the reason Carlson's own tail is larger than
   RT-FP's.
 * The shipped **Carlson** path implements the PDF's jump-surface/star-cone
-  reduction. It does **not** implement the symmetric `R_F/R_D/R_J` backend for
-  the general elliptic radial integral. The shipped Cauchy field uses `α = 1`,
-  where that radial integral is elementary, so these records do not exercise
-  `R_F/R_D/R_J`; the name describes the surface-reduction family, not a claim
-  that every special-function branch in the derivation is implemented.
+  reduction for `α = 1`. The separate **CarlsonAlpha** path accepts general
+  positive `α` through the radial finite-part quadrature and uses the `ellip`
+  crate's `R_F/R_D/R_J/R_C` implementations as its f64 verification backend.
+  This is deliberately narrower than claiming that every genus-one boundary
+  reduction in the derivation has been symbolically completed for every `α`.
 
-## Why Carlson and RT-FP
+## Why the surface solvers
 
-**They do not need a volumetric grid.** Both work directly from the mesh and an
-analytic density, so the accuracy limit never becomes "the cell is 5.25 m wide".
-The observation surface can be a millimetre above the terrain — the regime a
+**They do not need a volumetric grid.** RT-FP, Carlson and CarlsonAlpha work
+directly from the mesh and an analytic density, so the accuracy limit never
+becomes "the cell is 5.25 m wide". The observation surface can be a millimetre
+above the terrain — the regime a
 lander, a sampling manoeuvre, or a low-altitude gravity-gradient survey actually
 occupies — without the solver's own representation getting in the way.
 
-**They are cheap where it counts.** The body is a surface, not a volume, and both
-methods integrate over that surface. Cost scales with faces × observation points
-and runs on the GPU; there is no 192³ grid to fill, and no per-cell bookkeeping
-whose cost grows as the cube of the desired resolution. Resolution here is
-spent on the mesh, which is the thing that actually carries the shape
+**They are cheap where it counts.** The body is a surface, not a volume, and
+the GPU paths spend their work on face and direction structure. Cost scales
+with faces × observation points; there is no 192³ grid to fill, and no per-cell
+bookkeeping whose cost grows as the cube of the desired resolution. Resolution
+here is spent on the mesh, which is the thing that actually carries the shape
 information.
 
 **They are structurally independent of each other.** RT-FP splits the tensor into
 a closed-form near field plus a directional quadrature of the density deviation;
-Carlson reduces the whole problem to a jump-surface integral with no rays and no
-directions. Sharing only the mesh, they are a real cross-check: a coding error in
-either would have to be mirrored in the other to stay hidden. That is what makes
-the 0.12 % agreement on a varying density meaningful rather than circular.
+Carlson reduces the `α = 1` problem to jump surfaces with no rays; CarlsonAlpha
+integrates the general-α radial finite part. Sharing only the mesh and the input
+field turns agreement into a real cross-check rather than a shared-code
+round-trip.
 
 **They are indifferent to how the density is parameterised.** RT-FP integrates
 the radial direction in closed form, so fine *radial* structure costs nothing and
@@ -289,11 +297,12 @@ to the generated `dist/` directory. On pushes to `main`, GitHub Actions uploads
 `dist/` as the Pages artifact and deploys it through the `github-pages`
 environment. Neither `pkg/` nor `dist/` is committed to the repository.
 
-Four algorithm tabs, one per solver, each with the same two-segment vertical
+Five algorithm tabs, one per solver, each with the same two-segment vertical
 observation-height slider: 1 mm → 500 mm over the lower half of the track and
 1 m → 32 m over the upper half. Moving the slider restarts the bake at the new
-height. RT-FP and Carlson also carry a density switch (uniform ρ₀ vs the shipped
-Cauchy field) and a live face-by-face comparison against the reference records.
+height. Mascon and CarlsonAlpha share the fractional-Cauchy density switch;
+RT-FP and Carlson retain their Cauchy/uniform controls. The viewer compares each
+record face by face with the reference that uses the same density model.
 
 > A note on the uniform-density reference at extreme standoffs: the C++
 > polyhedral bake is the slow path within a millimetre of the terrain, so the
@@ -320,6 +329,19 @@ OBJ=../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj
   --order assets/records/.mascon_order.bin --density assets/density/cauchy.toml \
   --grid 192 --standoff-mm 16000
 
+# CarlsonAlpha and Mascon, fractional-Cauchy comparison field
+./target/release/rtfp-bake --obj "$OBJ" \
+  --out assets/records/carlsonalpha_elliptic_faces.bin \
+  --order assets/records/.carlsonalpha_order.bin \
+  --density assets/density/cauchy_elliptic.toml \
+  --mode elliptic --normalize raw --solver carlson-alpha \
+  --directions 288 --standoff-mm 16000
+./bakes/build/ryugu_mascon_bake_cpp --obj "$OBJ" \
+  --out assets/records/mascon_elliptic_faces.bin \
+  --order assets/records/.mascon_elliptic_order.bin \
+  --density assets/density/cauchy_elliptic.toml \
+  --grid 192 --standoff-mm 16000
+
 # Werner / ESA polyhedral, uniform density
 ./bakes/build/ryugu_gradient_bake_cpp --obj "$OBJ" --out assets/records/gradient_faces.bin \
   --order assets/records/.bake_order.bin --standoff-mm 16000
@@ -329,9 +351,11 @@ bun tools/compare-records.ts assets/records/carlson_cauchy_faces.bin \
   assets/records/rtfp_faces.bin
 ```
 
-Every solver is normalised to the same total mass (`--normalize total_mass`
-resolves the density weights so that ∫ρ dV = 4.5 × 10¹¹ kg), so a residual is
-never a bookkeeping difference.
+The original Cauchy and uniform records use the same total-mass convention
+(`--normalize total_mass` resolves the density weights so that
+∫ρ dV = 4.5 × 10¹¹ kg). The fractional-Cauchy comparison keeps the TOML weights
+raw for both Mascon and CarlsonAlpha, so those two records also share one
+density scale.
 
 ### Tests
 
@@ -345,7 +369,7 @@ bun run typecheck                          # server and tools
 ## Repository layout
 
 ```
-bakes/rtfp/          Rust bake host: RT-FP and Carlson solvers, WGSL kernels
+bakes/rtfp/          Rust bake host: RT-FP, Carlson, CarlsonAlpha and WGSL kernels
 bakes/mascon/        mascon voxel direct sum (C++)
 bakes/werner/        polyhedral closed form over the ESA reference library (C++)
 pkg/                 generated wasm-pack browser package (not committed)
@@ -354,7 +378,7 @@ src/server/          Bun development server, one endpoint per solver
 src/viewer/          Bevy + WebGPU viewer (Rust, compiled to WASM)
 src/web/             single-page control surface
 assets/density/      the density field (TOML)
-assets/records/      finished per-face records, one per solver
+assets/records/      finished per-face records, one per solver and density
 tools/               record comparison and other helpers
 docs/images/         figures used by this README
 ```

@@ -16,12 +16,10 @@
  *  * the record file on disk, which is the only thing that can declare a bake
  *    *finished* (`done`), because it is also the thing the viewer renders.
  */
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
-  RHGF_HEADER,
   STANDOFF_DEFAULT_MM,
-  STANDOFF_MAX_MM,
   blankRecord,
   clampStandoffMm,
   recordSummary,
@@ -32,12 +30,12 @@ export const ROOT = join(import.meta.dir, "../../..");
 export const LAUNCHER_BIN = join(ROOT, "target/release/rtfp-bake");
 export const DEFAULT_OBJ =
   process.env.BAKE_OBJ ?? join(ROOT, "../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj");
-export const DENSITY_TOML = join(ROOT, "assets/density/cauchy.toml");
 
 /** Face count of the Ryugu observation mesh, and the record's fixed size. */
 export const FACE_COUNT = 196608;
 
-export type DensityMode = "cauchy" | "constant";
+export type DensityMode = "cauchy" | "constant" | "elliptic";
+export type DensityModeMap = Partial<Record<DensityMode, string>>;
 
 export type SolverState = "idle" | "running" | "done" | "error";
 
@@ -55,16 +53,20 @@ export type SolverStatusPayload = SolverStatus & {
   standoffMm: number;
   densityMode: DensityMode;
   done: boolean;
-  records: Record<DensityMode, RecordSummary>;
+  records: Record<string, RecordSummary>;
 };
 
 export type SolverSpec = {
   /** `--solver` value handed to the binary. */
-  id: "ray" | "carlson";
+  id: "ray" | "carlson" | "carlson-alpha";
   /** Human-readable name used in status messages. */
   label: string;
+  /** Density selected before the UI explicitly requests another one. */
+  defaultDensity: DensityMode;
   /** Record written for each density mode. */
-  outByMode: Record<DensityMode, string>;
+  outByMode: DensityModeMap;
+  /** Density TOML consumed by each mode. */
+  densityByMode: DensityModeMap;
   /** Progressive write order, so a resumed run keeps the same face sequence. */
   order: string;
   /** stdout capture of the current run. */
@@ -100,7 +102,7 @@ function readFileOrNull(path: string): Buffer | null {
 export function createGpuSolver(spec: SolverSpec) {
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let standoffMm = STANDOFF_DEFAULT_MM;
-  let densityMode: DensityMode = "cauchy";
+  let densityMode: DensityMode = spec.defaultDensity;
   let status: SolverStatus = {
     state: "idle",
     current: 0,
@@ -111,10 +113,65 @@ export function createGpuSolver(spec: SolverSpec) {
     canResume: false,
   };
 
-  const outPath = () => spec.outByMode[densityMode];
+  function modePath(paths: DensityModeMap, density: DensityMode, label: string): string {
+    const path = paths[density];
+    if (!path) throw new Error(`${spec.label}: missing ${label} path for density ${density}`);
+    return path;
+  }
+
+  function recordPath(density: DensityMode): string {
+    return modePath(spec.outByMode, density, "record");
+  }
+
+  const outPath = () => recordPath(densityMode);
+
+  /**
+   * A server restart has no client-side density selection to read. Prefer a
+   * partially written record so Resume remains reachable, then the most recently
+   * touched complete record.
+   */
+  function bootDensityMode(): DensityMode {
+    const modes = Object.keys(spec.outByMode) as DensityMode[];
+    let best: { mode: DensityMode; partial: boolean; mtime: number } | null = null;
+    let defaultComplete = false;
+    for (const mode of modes) {
+      const path = modePath(spec.outByMode, mode, "record");
+      if (!existsSync(path)) continue;
+      const cp = recordSummary(readFileOrNull(path) ?? Buffer.alloc(0));
+      if (!cp.exists) continue;
+      if (mode === spec.defaultDensity && cp.done) defaultComplete = true;
+      let mtime = 0;
+      try {
+        mtime = statSync(path).mtimeMs;
+      } catch {
+        /* the record disappeared between existsSync and statSync */
+      }
+      const candidate = {
+        mode,
+        partial: cp.current > 0 && !cp.done,
+        mtime,
+      };
+      if (
+        !best
+        || (candidate.partial && !best.partial)
+        || (candidate.partial === best.partial && candidate.mtime > best.mtime)
+      ) {
+        best = candidate;
+      }
+    }
+    if (best?.partial) return best.mode;
+    if (defaultComplete) return spec.defaultDensity;
+    return best?.mode ?? spec.defaultDensity;
+  }
+
+  function densityLabel(density: DensityMode) {
+    if (density === "constant") return "constant";
+    if (density === "elliptic") return "fractional Cauchy";
+    return "Cauchy";
+  }
 
   function startMessage(prefix: string, density: DensityMode, mm: number) {
-    return `${prefix} ${spec.label} · ${density === "constant" ? "constant" : "Cauchy"} density · ${mm} mm`;
+    return `${prefix} ${spec.label} · ${densityLabel(density)} density · ${mm} mm`;
   }
 
   function payload(): SolverStatusPayload {
@@ -123,10 +180,12 @@ export function createGpuSolver(spec: SolverSpec) {
       standoffMm,
       densityMode,
       done: status.state === "done",
-      records: {
-        cauchy: recordSummary(readFileOrNull(spec.outByMode.cauchy) ?? Buffer.alloc(0)),
-        constant: recordSummary(readFileOrNull(spec.outByMode.constant) ?? Buffer.alloc(0)),
-      },
+      records: Object.fromEntries(
+        Object.entries(spec.outByMode).map(([mode, path]) => [
+          mode,
+          recordSummary(readFileOrNull(path) ?? Buffer.alloc(0)),
+        ]),
+      ),
     };
   }
 
@@ -289,6 +348,7 @@ export function createGpuSolver(spec: SolverSpec) {
   }
 
   function boot() {
+    densityMode = bootDensityMode();
     applyCheckpoint();
     const log = readFileOrNull(spec.log);
     if (log) {
@@ -365,19 +425,27 @@ export function createGpuSolver(spec: SolverSpec) {
     }
     const obj = DEFAULT_OBJ;
     if (!existsSync(obj)) return fail("Mesh missing", `missing OBJ: ${obj}`);
-    if (!existsSync(DENSITY_TOML)) {
-      return fail("Density TOML missing", `missing ${DENSITY_TOML}`);
+    // A resume continues the requested record's density mode and height; a
+    // restart takes both from the UI. An unsupported density is an error rather
+    // than a silent fallback to the default model.
+    const requested = requestedDensity ?? densityMode;
+    if (requestedDensity !== undefined && !(requestedDensity in spec.outByMode)) {
+      return fail(
+        "Density mode unsupported",
+        `${spec.label} cannot evaluate density ${JSON.stringify(requestedDensity)}`,
+        400,
+      );
     }
-
-    // A resume continues the record's own density mode and height; a restart
-    // takes both from the UI.
-    const nextDensity: DensityMode =
-      mode === "resume"
-        ? densityMode
-        : requestedDensity === "constant"
-          ? "constant"
-          : "cauchy";
-    const record = checkpoint();
+    const requestedMode = requested as DensityMode;
+    const nextDensity: DensityMode = spec.outByMode[requestedMode]
+      ? requestedMode
+      : spec.defaultDensity;
+    const densityToml = modePath(spec.densityByMode, nextDensity, "density TOML");
+    if (!existsSync(densityToml)) {
+      return fail("Density TOML missing", `missing ${densityToml}`);
+    }
+    const nextOutPath = recordPath(nextDensity);
+    const record = recordSummary(readFileOrNull(nextOutPath) ?? Buffer.alloc(0));
     const usedStandoffMm =
       mode === "resume" && record.standoffMm > 0
         ? record.standoffMm
@@ -386,16 +454,12 @@ export function createGpuSolver(spec: SolverSpec) {
     densityMode = nextDensity;
 
     if (mode === "resume") {
-      const cp = recordSummary(
-        readFileOrNull(spec.outByMode[nextDensity]) ?? Buffer.alloc(0),
-      );
+      const cp = record;
       const resumable = cp.exists && cp.current > 0 && !cp.done;
       if (!resumable && !cp.done) {
         return fail(
           "No resumable record",
-          `press "Recompute" first, or check ${
-            spec.outByMode[nextDensity].replace(`${ROOT}/`, "")
-          }`,
+          `press "Recompute" first, or check ${nextOutPath.replace(`${ROOT}/`, "")}`,
           400,
         );
       }
@@ -442,7 +506,7 @@ export function createGpuSolver(spec: SolverSpec) {
       "--order",
       spec.order,
       "--density",
-      DENSITY_TOML,
+      densityToml,
       "--mode",
       nextDensity,
       "--solver",
@@ -531,5 +595,3 @@ export function createGpuSolver(spec: SolverSpec) {
 
   return { spec, boot, statusResponse, start };
 }
-
-export type GpuSolver = ReturnType<typeof createGpuSolver>;
