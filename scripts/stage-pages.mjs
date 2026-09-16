@@ -8,7 +8,10 @@ const out = join(root, "dist");
 const files = [
   "pkg/ryugu_cauchy_gravity.js",
   "pkg/ryugu_cauchy_gravity_bg.wasm",
+  "src/web/live_preview.js",
   "assets/models/ryugu.glb",
+  "assets/live/face_observers.bin",
+  "assets/live/preview_sources.bin",
   "assets/records/gradient_faces.bin",
   "assets/records/mascon_faces.bin",
   "assets/records/mascon_elliptic_faces.bin",

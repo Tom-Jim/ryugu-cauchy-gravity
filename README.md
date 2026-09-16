@@ -306,10 +306,16 @@ environment. Neither `pkg/` nor `dist/` is committed to the repository.
 
 Five algorithm tabs, one per solver, each with the same two-segment vertical
 observation-height slider: 1 mm → 500 mm over the lower half of the track and
-1 m → 32 m over the upper half. Moving the slider restarts the bake at the new
-height. Mascon and CarlsonAlpha share the fractional-Cauchy density switch;
-RT-FP and Carlson retain their Cauchy/uniform controls. The viewer compares each
-record face by face with the reference that uses the same density model.
+1 m → 32 m over the upper half. On the hosted Pages build the slider stays
+interactive after the static files load: release at a new height starts a
+chunked WebGPU height-response preview, and the progress bar advances as each
+chunk completes. Exact per-solver records anchor the face-by-face structure;
+intermediate heights are evaluated continuously on the GPU. The local
+development build still runs the exact solver bake at the selected height.
+
+Mascon and CarlsonAlpha share the fractional-Cauchy density switch; RT-FP and
+Carlson retain their Cauchy/uniform controls. The viewer compares each record
+face by face with the reference that uses the same density model.
 
 > A note on the uniform-density reference at extreme standoffs: the C++
 > polyhedral bake is the slow path within a millimetre of the terrain, so the

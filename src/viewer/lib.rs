@@ -66,7 +66,9 @@ fn run_app() {
         })
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
-            unfocused_mode: UpdateMode::Continuous,
+            // A hidden tab does not need a 60 Hz spin loop. Keep the body alive
+            // at low frequency, then return to continuous updates on focus.
+            unfocused_mode: UpdateMode::reactive_low_power(std::time::Duration::from_secs(1)),
         })
         .add_plugins(
             DefaultPlugins

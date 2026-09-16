@@ -38,7 +38,12 @@
     #dens-btn { color: #0b0b10; background: #b8a0ff; }
     #bake-btn:disabled, #resume-btn:disabled, #dens-btn:disabled { opacity: 0.45; cursor: not-allowed; }
     #bar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-bottom: .45rem; }
-    #bar-fill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #6b4cff, #ff7a59); }
+    #bar-fill {
+      display: block; height: 100%; width: 100%;
+      transform: scaleX(0); transform-origin: left center;
+      background: linear-gradient(90deg, #6b4cff, #ff7a59);
+      will-change: transform; transition: transform .12s linear;
+    }
     #status { font-size: 12px; opacity: .9; line-height: 1.35; }
     #compare { margin-top: .45rem; font-size: 12px; opacity: .92; line-height: 1.4; white-space: pre-line; }
     #standoff {
@@ -55,6 +60,11 @@
     }
     #standoff-record { font-size: 10px; opacity: .68; white-space: nowrap; }
     #standoff-title { font-size: 10px; opacity: .68; }
+    #standoff-static {
+      padding: .28rem .45rem; border-radius: 7px;
+      background: rgba(155,183,255,.14); color: #cbd8ff;
+      font-size: 10px; font-weight: 650; white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -68,6 +78,7 @@
     <span id="standoff-val">16.00 m</span>
     <input id="standoff-range" type="range" min="0" max="1000" step="1" value="0"
            aria-label="Observation-surface height above the surface (mm)" />
+    <span id="standoff-static" hidden>Static record</span>
     <span id="standoff-title">Observation height</span>
     <span id="standoff-record"></span>
   </div>
@@ -102,8 +113,10 @@
     const statusEl = document.getElementById("status");
     const compareEl = document.getElementById("compare");
     const standoffRange = document.getElementById("standoff-range");
+    const standoffStatic = document.getElementById("standoff-static");
     const standoffVal = document.getElementById("standoff-val");
     const standoffRecord = document.getElementById("standoff-record");
+    const standoffTitle = document.getElementById("standoff-title");
 
     // ---------------------------------------------------------------------
     // Observation-surface height
@@ -307,10 +320,35 @@
     let pullGeneration = -1;
     let statsGeneration = -1;
     let lastPulledKey = "";
+    let livePreview = null;
+    let previewRunning = false;
+    let previewTargetMm = null;
+    let previewGeneration = 0;
+    let previewAbort = null;
+    /** Static records never change during a session; keep each response once. */
+    const staticRecordCache = new Map();
     const recordAsset = () =>
       (isDensitySelectable ? cfg.assets?.[densityMode] : cfg.asset)
       ?? cfg.asset
       ?? Object.values(cfg.assets ?? {})[0];
+
+    async function loadRecordBytes(asset, signal) {
+      if (STATIC_DEMO) {
+        let pending = staticRecordCache.get(asset);
+        if (!pending) {
+          pending = fetch(asset, { cache: "force-cache" }).then(async (res) => {
+            if (!res.ok) throw new Error(`record read failed (${res.status})`);
+            return new Uint8Array(await res.arrayBuffer());
+          });
+          pending.catch(() => staticRecordCache.delete(asset));
+          staticRecordCache.set(asset, pending);
+        }
+        return pending;
+      }
+      const res = await fetch(asset, { cache: "no-store", signal });
+      if (!res.ok) throw new Error(`record read failed (${res.status})`);
+      return new Uint8Array(await res.arrayBuffer());
+    }
 
     async function selectAlgorithm(next) {
       if (!ALGOS[next] || next === algo || algoSwitching) return;
@@ -318,6 +356,9 @@
       algoSwitching = true;
       algoBtn.disabled = true;
       recordGeneration++;
+      previewGeneration++;
+      previewTargetMm = null;
+      previewAbort?.abort();
       try {
         algo = next;
         cfg = ALGOS[next];
@@ -362,8 +403,11 @@
     if (STATIC_DEMO) {
       bakeBtn.hidden = true;
       resumeBtn.hidden = true;
-      standoffRange.disabled = true;
-      standoffRange.title = "The hosted demo uses precomputed records";
+      standoffStatic.hidden = false;
+      standoffStatic.textContent = "GPU live";
+      standoffTitle.textContent = "Release to compute";
+      standoffStatic.title =
+        "Exact records anchor the display; intermediate heights are evaluated on the GPU.";
     }
 
     const show = (t) => {
@@ -445,7 +489,7 @@
 
     function renderStatus(s) {
       const pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
-      barFill.style.width = `${pct}%`;
+      barFill.style.transform = `scaleX(${pct / 100})`;
       let line = s.message || s.state;
       if (s.total > 0) line += ` · ${pct.toFixed(1)}%`;
       if (s.error) line += ` · ${s.error}`;
@@ -482,13 +526,12 @@
     }
 
     /** Colour-window statistics, so the panel explains what the renderer chose. */
-    async function refreshBakeScalarStats(buffer) {
+    async function refreshBakeScalarStats(parsed) {
       const generation = recordGeneration;
+      if (!parsed) return;
       if (statsGeneration === generation) return;
       statsGeneration = generation;
       try {
-        const parsed = parseFaceScalars(buffer);
-        if (!parsed) return;
         if (generation !== recordGeneration) return;
         // Keep the 196k samples in a packed float buffer; a JS Number[] here
         // costs several megabytes per analysis and creates avoidable GC spikes.
@@ -541,14 +584,17 @@
     // RHGF v5 record reader
     // ---------------------------------------------------------------------
     function parseFaceScalars(buf) {
-      const dv = new DataView(buf);
-      if (buf.byteLength < 28) return null;
+      const bytes = buf instanceof Uint8Array
+        ? buf
+        : new Uint8Array(buf);
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (bytes.byteLength < 28) return null;
       if (dv.getUint32(0, true) !== 0x52484746) return null;
       // v5 keeps the scalars at 28 + 4·total; an older header would shift every
       // value by one float and silently produce a bogus comparison.
       if (dv.getUint32(4, true) !== 5) return null;
       const total = dv.getUint32(8, true);
-      if (buf.byteLength < 28 + total * 4) return null;
+      if (bytes.byteLength < 28 + total * 4) return null;
       // Offset 16 is the reserved slot holding the observation height (mm).
       const standoffMm = dv.getFloat32(16, true);
       const scalars = new Float32Array(total);
@@ -675,14 +721,13 @@
           : "?";
         return `${label}: waiting for a complete ${ref.name} record (${pct}%)`;
       }
-      const [refRes, mineRes] = await Promise.all([
-        fetch(`${ref.asset}?t=${Date.now()}`, { cache: "no-store" }),
-        fetch(`${recordAsset()}?t=${Date.now()}`, { cache: "no-store" }),
+      const [refBytes, mineBytes] = await Promise.all([
+        loadRecordBytes(ref.asset),
+        loadRecordBytes(recordAsset()),
       ]);
-      if (!refRes.ok || !mineRes.ok) return `${label}: record read failed`;
       // Both records are RHGF v5: same header, same one-f32-per-face layout.
-      const a = parseFaceScalars(await refRes.arrayBuffer());
-      const b = parseFaceScalars(await mineRes.arrayBuffer());
+      const a = parseFaceScalars(refBytes);
+      const b = parseFaceScalars(mineBytes);
       if (!a || !b) return `${label}: invalid record format`;
       const d = scalarDiffStats(b, a, 0.05);
       if (!d) return `${label}: not enough finite faces to compare`;
@@ -734,9 +779,7 @@
               standoffMm: record.standoffMm ?? 0,
             };
           }
-          const res = await fetch(ref.asset, { cache: "no-store" });
-          if (!res.ok) throw new Error(`failed to read ${ref.name} reference`);
-          const parsed = parseFaceScalars(await res.arrayBuffer());
+          const parsed = parseFaceScalars(await loadRecordBytes(ref.asset));
           if (!parsed) throw new Error(`invalid ${ref.name} reference`);
           return {
             state: "done",
@@ -774,6 +817,9 @@
     async function startBake(mode) {
       const generation = ++recordGeneration;
       if (STATIC_DEMO) {
+        previewGeneration++;
+        previewTargetMm = null;
+        previewAbort?.abort();
         statusEl.textContent = "Loading the precomputed record…";
         compareKey = "";
         if (wasmViewer) await pullBakeIntoWasm(wasmViewer, generation);
@@ -808,11 +854,14 @@
 
     /** Apply a new observation height to whichever algorithm is on screen. */
     function applyStandoff(mm) {
-      if (STATIC_DEMO) return;
       setStandoffUi(mm);
       // Whatever is on disk now belongs to the previous height.
       setStandoffRecordLabel(Number.NaN);
-      startBake("restart");
+      if (STATIC_DEMO) {
+        queueLivePreview(standoffMm);
+      } else {
+        startBake("restart");
+      }
     }
 
     standoffRange.addEventListener("input", () => {
@@ -825,13 +874,69 @@
       applyStandoff(standoffMm);
     });
 
+    function previewSourceSet() {
+      const mode = isDensitySelectable ? densityMode : "constant";
+      return mode === "elliptic" ? "elliptic" : mode === "constant" ? "constant" : "cauchy";
+    }
+
+    function queueLivePreview(mm) {
+      if (!STATIC_DEMO || !livePreview || !wasmViewer) return;
+      previewTargetMm = mm;
+      previewGeneration++;
+      previewAbort?.abort();
+      if (!previewRunning) void runLivePreviewQueue();
+    }
+
+    async function runLivePreviewQueue() {
+      previewRunning = true;
+      try {
+        while (previewTargetMm !== null) {
+          const mm = previewTargetMm;
+          previewTargetMm = null;
+          const token = previewGeneration;
+          const asset = recordAsset();
+          const controller = new AbortController();
+          previewAbort = controller;
+          try {
+            const referenceBytes = await loadRecordBytes(asset);
+            if (token !== previewGeneration || recordAsset() !== asset) continue;
+            setStandoffRecordLabel(mm);
+            statusEl.textContent = `Live GPU preview · ${fmtMm(mm)} · 0.0%`;
+            const result = await livePreview.evaluate({
+              sourceSet: previewSourceSet(),
+              heightMm: mm,
+              referenceBytes,
+              signal: controller.signal,
+              onProgress: (pct) => {
+                if (token !== previewGeneration) return;
+                const bounded = Math.max(0, Math.min(1, pct));
+                barFill.style.transform = `scaleX(${bounded})`;
+                statusEl.textContent =
+                  `Live GPU preview · ${fmtMm(mm)} · ${(100 * bounded).toFixed(1)}%`;
+              },
+            });
+            if (token !== previewGeneration || !result || recordAsset() !== asset) continue;
+            wasmViewer.push_bake_update(result);
+            window.__bakeScalarStats = null;
+            const parsed = parseFaceScalars(result);
+            setStandoffRecordLabel(parsed?.standoffMm ?? mm);
+            statusEl.textContent =
+              `Live GPU preview · ${fmtMm(mm)} · 100.0% · anchored to exact 16.00 m record`;
+          } catch (e) {
+            if (token === previewGeneration) {
+              statusEl.textContent = `live preview failed: ${e}`;
+            }
+          } finally {
+            if (previewAbort === controller) previewAbort = null;
+          }
+        }
+      } finally {
+        previewRunning = false;
+      }
+    }
+
     async function staticStatus(signal) {
-      const res = await fetch(`${recordAsset()}?t=${Date.now()}`, {
-        cache: "no-store",
-        signal,
-      });
-      if (!res.ok) throw new Error(`record read failed (${res.status})`);
-      const parsed = parseFaceScalars(await res.arrayBuffer());
+      const parsed = parseFaceScalars(await loadRecordBytes(recordAsset(), signal));
       if (!parsed) throw new Error("invalid RHGF v5 record");
       return {
         state: "done",
@@ -842,6 +947,7 @@
         total: parsed.total,
         standoffMm: parsed.standoffMm,
         densityMode,
+        parsed,
       };
     }
 
@@ -890,7 +996,7 @@
       if (!wasmViewer || generation !== recordGeneration) return;
       const key = statusRecordKey(s);
       if (!key || key === lastPulledKey) return;
-      await pullBakeIntoWasm(wasmViewer, generation, key, s.done === true);
+      await pullBakeIntoWasm(wasmViewer, generation, key, s.done === true, s.parsed);
     }
 
     async function pullBakeIntoWasm(
@@ -898,6 +1004,7 @@
       generation = recordGeneration,
       key = "",
       withStats = false,
+      parsed = null,
     ) {
       if (pullAbort && pullGeneration === generation) return;
       if (pullAbort) pullAbort.abort();
@@ -906,17 +1013,12 @@
       pullGeneration = generation;
       const asset = recordAsset();
       try {
-        const bakeRes = await fetch(`${asset}?t=${Date.now()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!bakeRes.ok) return;
-        const bakeBytes = new Uint8Array(await bakeRes.arrayBuffer());
+        const bakeBytes = await loadRecordBytes(asset, controller.signal);
         if (generation !== recordGeneration) return;
         if (bakeBytes.byteLength >= 28) {
           wasm.push_bake_update(bakeBytes);
           if (key) lastPulledKey = key;
-          if (withStats) await refreshBakeScalarStats(bakeBytes.buffer);
+          if (withStats) await refreshBakeScalarStats(parsed ?? parseFaceScalars(bakeBytes));
         }
       } catch {
         /* ignore the transient read while the writer truncates the record */
@@ -986,14 +1088,27 @@
           wasmViewer = wasm;
           let bakeBytes = new Uint8Array(28);
           try {
-            const bakeRes = await fetch(recordAsset(), { cache: "no-store" });
-            if (bakeRes.ok) bakeBytes = new Uint8Array(await bakeRes.arrayBuffer());
+            bakeBytes = await loadRecordBytes(recordAsset());
           } catch {
             /* start gray; the bake may create the file */
           }
           wasm.run_with_bake(bakeBytes);
           lastPulledKey = statusRecordKey(initialStatus);
-          if (initialStatus?.done) await refreshBakeScalarStats(bakeBytes.buffer);
+          if (STATIC_DEMO) {
+            const previewDevice = await adapter.requestDevice();
+            const { LivePreview } = await import("./src/web/live_preview.js");
+            livePreview = new LivePreview(previewDevice, {
+              adapter,
+              observerUrl: "./assets/live/face_observers.bin",
+              sourceUrl: "./assets/live/preview_sources.bin",
+            });
+            await livePreview.init();
+          }
+          if (initialStatus?.done) {
+            await refreshBakeScalarStats(
+              parseFaceScalars(bakeBytes) ?? null,
+            );
+          }
         }
       } catch (e) {
         show(String(e?.stack || e));
