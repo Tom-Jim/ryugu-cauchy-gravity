@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="ryugu-mode" content="dynamic" />
   <link rel="icon" href="data:," />
-  <title>Ryugu · gravity-gradient face records</title>
+  <title>Ryugu · gravity-gradient live comparison</title>
   <style>
     html, body { margin: 0; height: 100%; background: #050508; color: #e8e6e3; font-family: ui-sans-serif, system-ui, sans-serif; }
     #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
@@ -127,7 +127,7 @@
     <span id="standoff-val">16.00 m</span>
     <input id="standoff-range" type="range" min="0" max="1000" step="1" value="0"
            aria-label="Observation-surface height above the surface (mm)" />
-    <span id="standoff-static" hidden>Static record</span>
+    <span id="standoff-static" hidden>Live / temporary</span>
     <span id="standoff-title">Observation height</span>
     <span id="standoff-record"></span>
   </div>
@@ -213,9 +213,8 @@
     const STANDOFF_DEFAULT_MM = 16000;
     let standoffMm = STANDOFF_DEFAULT_MM;
     let standoffDragging = false;
-    // After a manual height change the record on disk is stale for a moment:
-    // the sweep restarts a frame later, and a checkpoint queued just before the
-    // change may land after the clear. Do not let it drag the slider back.
+    // After a manual height change the displayed result belongs to the previous
+    // surface until the queued computation finishes.
     let standoffHoldUntil = 0;
 
     const clampStandoff = (mm) => {
@@ -271,14 +270,13 @@
       const v = Number(mm);
       standoffRecord.textContent =
         Number.isFinite(v) && v >= STANDOFF_MIN_MM && v <= STANDOFF_MAX_MM
-          ? `record ${fmtMm(v)}`
+          ? `latest ${fmtMm(v)}`
           : "";
     }
 
     /**
-     * Adopt the height a record on disk was computed at, but stay quiet for a
-     * moment after a manual change: the previous record is still on disk for a
-     * poll or two and would otherwise relabel the new height with the old one.
+     * Adopt the height reported by the current result, but stay quiet for a
+     * moment after a manual slider change so stale status cannot drag it back.
      */
     function syncStandoffFromRecord(mm) {
       const v = Number(mm);
@@ -296,9 +294,9 @@
     // ---------------------------------------------------------------------
     // Algorithm selection
     //
-    // All solvers share one record format (RHGF v5) and one display path, so
-    // the page only needs to know the control endpoint, the available density
-    // records, and which of them are selectable.
+    // The hosted viewer keeps one in-memory result per algorithm and density
+    // model. The local development server still exposes the exact solver
+    // endpoints, but the browser never treats a packaged result as an answer.
     // ---------------------------------------------------------------------
     const ALGO_KEY = "ryugu_algo";
     const ALGO_ORDER = ["werner", "mascon", "model", "carlson", "carlsonalpha"];
@@ -309,7 +307,7 @@
         title: "Werner · uniform density · analytic polyhedral gradient",
         api: "/api/werner",
         asset: "assets/records/gradient_faces.bin",
-        compare: false,
+        compare: true,
         next: "Switch to Mascon (voxel)",
       },
       mascon: {
@@ -321,7 +319,7 @@
           elliptic: "assets/records/mascon_elliptic_faces.bin",
           cauchy: "assets/records/mascon_faces.bin",
         },
-        compare: false,
+        compare: true,
         next: "Switch to RT-FP",
       },
       model: {
@@ -391,26 +389,50 @@
     let previewTarget = null;
     let previewGeneration = 0;
     let previewAbort = null;
-    /** Static records never change during a session; keep each response once. */
-    const staticRecordCache = new Map();
+    /**
+     * Latest completed browser result for each algorithm/density pair.
+     *
+     * These entries live only in this tab. They are overwritten by the next
+     * completed computation and disappear on reload; nothing is persisted.
+     */
+    const latestResults = new Map();
+    const densitySelections = new Map();
+    let latestResultRevision = 0;
+    const resultMode = (algoId = algo, mode = densityMode) =>
+      (ALGOS[algoId]?.densityModes?.length > 1 ? mode : "uniform");
+    const latestResultKey = (algoId = algo, mode = densityMode) =>
+      `${algoId}:${resultMode(algoId, mode)}`;
+    const activeResultKey = () => latestResultKey(algo, densityMode);
+
+    function latestResultFor(algoId, mode) {
+      return latestResults.get(latestResultKey(algoId, mode)) ?? null;
+    }
+
+    function sameStandoff(a, b) {
+      return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-3;
+    }
+
+    function rememberLatestResult(bytes, parsed, sourceSet) {
+      const result = {
+        bytes,
+        parsed,
+        sourceSet,
+        algo,
+        densityMode: resultMode(),
+        standoffMm: parsed.standoffMm,
+        revision: ++latestResultRevision,
+      };
+      latestResults.set(activeResultKey(), result);
+      return result;
+    }
+
     const recordAsset = () =>
       (isDensitySelectable ? cfg.assets?.[densityMode] : cfg.asset)
       ?? cfg.asset
       ?? Object.values(cfg.assets ?? {})[0];
 
     async function loadRecordBytes(asset, signal) {
-      if (STATIC_DEMO) {
-        let pending = staticRecordCache.get(asset);
-        if (!pending) {
-          pending = fetch(asset, { cache: "force-cache" }).then(async (res) => {
-            if (!res.ok) throw new Error(`record read failed (${res.status})`);
-            return new Uint8Array(await res.arrayBuffer());
-          });
-          pending.catch(() => staticRecordCache.delete(asset));
-          staticRecordCache.set(asset, pending);
-        }
-        return pending;
-      }
+      if (!asset) throw new Error("solver record path is unavailable");
       const res = await fetch(asset, { cache: "no-store", signal });
       if (!res.ok) throw new Error(`record read failed (${res.status})`);
       return new Uint8Array(await res.arrayBuffer());
@@ -430,7 +452,7 @@
         cfg = ALGOS[next];
         isDensitySelectable = Array.isArray(cfg.densityModes) && cfg.densityModes.length > 1;
         bakeApi = cfg.api;
-        densityMode = cfg.defaultDensity ?? "cauchy";
+        densityMode = densitySelections.get(next) ?? cfg.defaultDensity ?? "cauchy";
         compareKey = "";
         window.__bakeScalarStats = null;
         compareEl.hidden = !cfg.compare;
@@ -476,10 +498,10 @@
       bakeBtn.textContent = "Initializing…";
       resumeBtn.hidden = true;
       standoffStatic.hidden = false;
-      standoffStatic.textContent = "Exact / full";
+      standoffStatic.textContent = "Live / temporary";
       standoffTitle.textContent = "Release to recompute";
       standoffStatic.title =
-        "Known heights use exact records; other heights run a full surface recompute.";
+        "Every height runs a full live surface recompute; results stay in memory only.";
     }
 
     const show = (t) => {
@@ -498,6 +520,7 @@
     // Status rendering
     // ---------------------------------------------------------------------
     function densityLabel(mode) {
+      if (mode === "uniform") return "uniform";
       if (mode === "constant") return "uniform";
       if (mode === "elliptic") return "fractional Cauchy";
       return "Cauchy";
@@ -592,10 +615,10 @@
         // The density model lives on the server (it selects the kernel set), so
         // the button label follows the reported status rather than local state.
         if (cfg.densityModes.includes(s.densityMode)) densityMode = s.densityMode;
-        applyAlgoLabels();
         densBtn.disabled = running;
-        updateAlgorithmCompare(s);
       }
+      applyAlgoLabels();
+      updateAlgorithmCompare(s);
       if (s.state !== "done") window.__bakeScalarStats = null;
     }
 
@@ -754,22 +777,41 @@
     }
 
     /**
-     * Reference records.
-     *
-     * Each density model gets its own reference. The primary pair is always the
-     * same field on the same observation surface; secondary pairs are labelled
-     * explicitly so a density mismatch cannot be mistaken for solver error.
+     * Reference algorithm/density pairs. On the hosted viewer these resolve to
+     * the latest in-memory result for that pair, never to a packaged record.
      */
     const COMPARE_REFS = {
       werner: {
         name: "Werner",
         kind: "uniform density",
+        algo: "werner",
+        densityMode: "uniform",
         asset: "assets/records/gradient_faces.bin",
         api: "/api/werner/status",
+      },
+      "rtfp-cauchy": {
+        name: "RT-FP",
+        kind: "Cauchy density",
+        algo: "model",
+        densityMode: "cauchy",
+        asset: "assets/records/rtfp_faces.bin",
+        api: "/api/rtfp/status",
+        recordKey: "cauchy",
+      },
+      "rtfp-constant": {
+        name: "RT-FP",
+        kind: "uniform density",
+        algo: "model",
+        densityMode: "constant",
+        asset: "assets/records/rtfp_constant_faces.bin",
+        api: "/api/rtfp/status",
+        recordKey: "constant",
       },
       "mascon-cauchy": {
         name: "Mascon",
         kind: "Cauchy density",
+        algo: "mascon",
+        densityMode: "cauchy",
         asset: "assets/records/mascon_faces.bin",
         api: "/api/mascon/status",
         recordKey: "cauchy",
@@ -777,23 +819,59 @@
       "mascon-elliptic": {
         name: "Mascon",
         kind: "fractional Cauchy density",
+        algo: "mascon",
+        densityMode: "elliptic",
         asset: "assets/records/mascon_elliptic_faces.bin",
         api: "/api/mascon/status",
         recordKey: "elliptic",
       },
+      "carlson-cauchy": {
+        name: "Carlson",
+        kind: "Cauchy density",
+        algo: "carlson",
+        densityMode: "cauchy",
+        asset: "assets/records/carlson_cauchy_faces.bin",
+        api: "/api/carlson/status",
+        recordKey: "cauchy",
+      },
+      "carlson-constant": {
+        name: "Carlson",
+        kind: "uniform density",
+        algo: "carlson",
+        densityMode: "constant",
+        asset: "assets/records/carlson_constant_faces.bin",
+        api: "/api/carlson/status",
+        recordKey: "constant",
+      },
+      "carlsonalpha-elliptic": {
+        name: "CarlsonAlpha",
+        kind: "fractional Cauchy density",
+        algo: "carlsonalpha",
+        densityMode: "elliptic",
+        asset: "assets/records/carlsonalpha_elliptic_faces.bin",
+        api: "/api/carlsonalpha/status",
+        recordKey: "elliptic",
+      },
     };
     const COMPARE_ORDER = {
+      werner: {
+        uniform: ["rtfp-constant", "carlson-constant"],
+      },
+      mascon: {
+        cauchy: ["rtfp-cauchy", "carlson-cauchy"],
+        elliptic: ["carlsonalpha-elliptic"],
+      },
       model: {
-        cauchy: ["mascon-cauchy", "werner"],
-        constant: ["werner", "mascon-cauchy"],
+        cauchy: ["carlson-cauchy", "mascon-cauchy"],
+        constant: ["werner", "carlson-constant"],
       },
       carlson: {
-        cauchy: ["mascon-cauchy", "werner"],
-        constant: ["werner", "mascon-cauchy"],
+        cauchy: ["rtfp-cauchy", "mascon-cauchy"],
+        constant: ["werner", "rtfp-constant"],
       },
       carlsonalpha: {
         elliptic: ["mascon-elliptic"],
-        constant: ["werner"],
+        constant: ["werner", "carlson-constant"],
       },
     };
 
@@ -818,16 +896,35 @@
      * what is left below is solver difference, not sampling.
      */
     function samplingNote() {
-      return " · identical sampling: three-vertex mean of ‖H‖_F with vertex normals";
+      return " · identical live sampling: face-centre ‖H‖_F with face normals";
     }
 
     let compareBusy = false;
-    // Reading two records is ~1–2 MB of scalars; only redo the comparison when
-    // something it depends on moved (density model, either record, either height).
     let compareKey = "";
 
-    /** One comparison line, or the reason it could not be computed yet. */
-    async function compareAgainst(ref, refSt, mine) {
+    /** Compare two completed in-memory results, but only on the same surface. */
+    function compareCachedAgainst(ref, mine) {
+      const label = `对比 ${ref.name} (${ref.kind})`;
+      const reference = latestResultFor(ref.algo, ref.densityMode);
+      if (!reference) {
+        return `${label}: 尚未计算。请先切换到 ${ref.name} · ${ref.kind}，`
+          + `并在 ${fmtMm(mine.standoffMm)} 计算一次。`;
+      }
+      if (!sameStandoff(reference.standoffMm, mine.standoffMm)) {
+        return `${cfg.name} 当前设置 ${fmtMm(mine.standoffMm)}，因此 ${ref.name} · `
+          + `${ref.kind} 也需要设置为 ${fmtMm(mine.standoffMm)} 才能比较`
+          + `（当前最新结果：${fmtMm(reference.standoffMm)}）。`;
+      }
+      const d = scalarDiffStats(mine.parsed, reference.parsed, 0.05);
+      if (!d) return `${label}: 可比较的有限面不足。`;
+      const pct = (x) => `${(100 * x).toFixed(2)}%`;
+      const partial = d.compared < d.total ? ` · 仅 ${d.compared}/${d.total} 面` : "";
+      return `${label}: 中位差 ${pct(d.med)} · 最大 ${pct(d.max)}`
+        + ` · 超过 ${pct(d.relEps)} 的面 ${d.over}/${d.compared}${partial}`;
+    }
+
+    /** One comparison line for the local development server. */
+    async function compareAgainstRecord(ref, refSt, mine) {
       const label = `vs ${ref.name} (${ref.kind})`;
       const refDone = Number(refSt.current) > 0 && Number(refSt.current) >= Number(refSt.total);
       if (refSt.state !== "done" && !refDone) {
@@ -855,12 +952,37 @@
     }
 
     async function updateAlgorithmCompare(status) {
-      if (!cfg.compare || !compareEl) return;
+      if (!compareEl) return;
       const generation = recordGeneration;
-      const mode = cfg.densityModes?.includes(densityMode) ? densityMode : cfg.defaultDensity;
+      const mode = resultMode();
       const order = COMPARE_ORDER[algo]?.[mode] ?? [];
       const mineTag = `${cfg.name} ${densityLabel(mode)} density`;
       compareEl.hidden = false;
+      if (STATIC_DEMO) {
+        if (order.length === 0) {
+          compareEl.textContent = "当前模式没有同密度的临时比较结果。";
+          return;
+        }
+        const mine = latestResults.get(activeResultKey());
+        if (!status?.done || !mine || !sameStandoff(mine.standoffMm, status.standoffMm)) {
+          compareKey = "";
+          compareEl.textContent = `计算完成后将使用各算法最新一次临时结果比较；`
+            + ` ${cfg.name} 当前设置 ${fmtMm(standoffMm)}，参考算法也必须在同一高度完成计算。`;
+          return;
+        }
+        const key = [
+          mine.revision,
+          ...order.map((k) => {
+            const ref = COMPARE_REFS[k];
+            return `${k}:${latestResultFor(ref.algo, ref.densityMode)?.revision ?? "none"}`;
+          }),
+        ].join("|");
+        if (key === compareKey) return;
+        compareKey = key;
+        const lines = order.map((k) => compareCachedAgainst(COMPARE_REFS[k], mine));
+        compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
+        return;
+      }
       if (!status?.done) {
         compareKey = "";
         compareEl.textContent = "Once the bake completes this record is compared"
@@ -913,7 +1035,9 @@
         if (key === compareKey) return;
         compareKey = key;
         const lines = [];
-        for (const k of order) lines.push(await compareAgainst(COMPARE_REFS[k], refSts[k], mineTag));
+        for (const k of order) {
+          lines.push(await compareAgainstRecord(COMPARE_REFS[k], refSts[k], mineTag));
+        }
         if (generation !== recordGeneration) return;
         compareEl.textContent = lines.join("\n") + "\n" + samplingNote();
       } catch (e) {
@@ -970,7 +1094,7 @@
     /** Apply a new observation height to whichever algorithm is on screen. */
     function applyStandoff(mm) {
       setStandoffUi(mm);
-      // Whatever is on disk now belongs to the previous height.
+      // The visible result now belongs to the previous height.
       setStandoffRecordLabel(Number.NaN);
       if (STATIC_DEMO) {
         void requestStaticCompute(standoffMm, { preserveWindow: false });
@@ -989,15 +1113,18 @@
       applyStandoff(standoffMm);
     });
 
-    function previewSourceSet() {
-      const mode = isDensitySelectable ? densityMode : "constant";
-      return mode === "elliptic" ? "elliptic" : mode === "constant" ? "constant" : "cauchy";
+    function previewSourceSet(algoId = algo, mode = densityMode) {
+      if (algoId === "werner") return "constant";
+      const config = ALGOS[algoId];
+      const selected = config?.densityModes?.length > 1
+        ? mode
+        : config?.defaultDensity ?? "constant";
+      return selected === "elliptic"
+        ? "elliptic"
+        : selected === "constant"
+          ? "constant"
+          : "cauchy";
     }
-
-    const STATIC_ANCHOR_MM = 16000;
-    // The upper half of the slider is 62 mm per step, so 16.00 m snaps to a
-    // position that decodes to 16004 mm. Treat the half-step as the same anchor.
-    const isStaticAnchor = (mm) => Math.abs(mm - STATIC_ANCHOR_MM) < 31;
 
     async function requestStaticCompute(
       mm,
@@ -1019,51 +1146,58 @@
         return;
       }
 
-      if (!forceCompute && isStaticAnchor(mm)) {
-        const asset = recordAsset();
-        statusEl.textContent = `Rendering exact precomputed ${fmtMm(mm)} record…`;
-        try {
-          const bytes = await loadRecordBytes(asset);
-          if (generation !== recordGeneration || recordAsset() !== asset) return;
-          const parsed = parseFaceScalars(bytes);
-          if (!parsed) throw new Error("invalid precomputed RHGF v5 record");
-          if (preserveWindow && wasmViewer.push_bake_update_preserving_window) {
-            wasmViewer.push_bake_update_preserving_window(bytes);
-          } else {
-            wasmViewer.push_bake_update(bytes);
-          }
-          await waitForRenderedFrames();
-          if (generation !== recordGeneration || recordAsset() !== asset) return;
-          lastPulledKey = "";
-          await refreshBakeScalarStats(parsed);
-          if (generation !== recordGeneration || recordAsset() !== asset) return;
-          setStandoffRecordLabel(parsed.standoffMm);
-          renderStatus({
-            state: "done",
-            message: `Exact precomputed ${fmtMm(parsed.standoffMm)} record`
-              + (preserveWindow ? " · shared density colour scale" : ""),
-            percent: 100,
-            current: parsed.total,
-            total: parsed.total,
-            standoffMm: parsed.standoffMm,
-            densityMode,
-          });
-        } catch (e) {
-          if (generation === recordGeneration) {
-            hideComputeIndicator();
-            statusEl.textContent = `precomputed record failed: ${e}`;
-          }
-        }
-        return;
-      }
-
-      queueLivePreview(mm, { preserveWindow, generation });
+      queueLivePreview(mm, { preserveWindow, forceCompute, generation });
     }
 
-    function queueLivePreview(mm, { preserveWindow = false, generation = recordGeneration } = {}) {
+    function queueLivePreview(
+      mm,
+      {
+        preserveWindow = false,
+        forceCompute = false,
+        generation = recordGeneration,
+      } = {},
+    ) {
       if (!STATIC_DEMO || !livePreview || !wasmViewer) return;
-      previewTarget = { mm, preserveWindow, generation };
+      previewTarget = { mm, preserveWindow, forceCompute, generation };
       if (!previewRunning) void runLivePreviewQueue();
+    }
+
+    async function renderCompletedResult(
+      result,
+      {
+        preserveWindow = false,
+        generation = recordGeneration,
+        message = "",
+      } = {},
+    ) {
+      if (generation !== recordGeneration || !result) return false;
+      const label = message || `最新临时结果 · ${fmtMm(result.standoffMm)}`;
+      showComputeIndicator(99, `渲染 ${fmtMm(result.standoffMm)}`);
+      statusEl.textContent = `${label} · 渲染中 · 99.0%`;
+      if (preserveWindow && wasmViewer.push_bake_update_preserving_window) {
+        wasmViewer.push_bake_update_preserving_window(result.bytes);
+      } else {
+        wasmViewer.push_bake_update(result.bytes);
+      }
+      await waitForRenderedFrames();
+      if (generation !== recordGeneration) return false;
+      window.__bakeScalarStats = null;
+      setStandoffRecordLabel(result.standoffMm);
+      await refreshBakeScalarStats(result.parsed);
+      if (generation !== recordGeneration) return false;
+      hideComputeIndicator();
+      renderStatus({
+        state: "done",
+        done: true,
+        message: label
+          + (preserveWindow ? " · shared density colour scale" : ""),
+        percent: 100,
+        current: result.parsed.total,
+        total: result.parsed.total,
+        standoffMm: result.standoffMm,
+        densityMode: result.densityMode,
+      });
+      return true;
     }
 
     async function runLivePreviewQueue() {
@@ -1075,23 +1209,30 @@
           const job = previewTarget;
           previewTarget = null;
           const token = previewGeneration;
-          const asset = recordAsset();
           const controller = new AbortController();
           previewAbort = controller;
           try {
             if (job.generation !== recordGeneration) continue;
             const label = `Full surface recompute · ${fmtMm(job.mm)}`;
+            const cached = !job.forceCompute
+              ? latestResultFor(algo, densityMode)
+              : null;
+            if (cached && sameStandoff(cached.standoffMm, job.mm)) {
+              await renderCompletedResult(cached, {
+                preserveWindow: job.preserveWindow,
+                generation: job.generation,
+                message: `Temporary result · ${fmtMm(job.mm)}`,
+              });
+              continue;
+            }
             setBarPercent(0);
             showComputeIndicator(0, `全表面 ${fmtMm(job.mm)}`);
             resetModelToGray();
             statusEl.textContent = `${label} · 0.0%`;
-            const referenceBytes = await loadRecordBytes(asset);
-            if (token !== previewGeneration || recordAsset() !== asset) continue;
             setStandoffRecordLabel(job.mm);
             const result = await livePreview.evaluate({
               sourceSet: previewSourceSet(),
               heightMm: job.mm,
-              referenceBytes,
               signal: controller.signal,
               onProgress: (pct) => {
                 if (token !== previewGeneration) return;
@@ -1103,31 +1244,19 @@
                   `${label} · ${computePercent.toFixed(1)}%`;
               },
             });
-            if (token !== previewGeneration || !result || recordAsset() !== asset) continue;
-            if (job.preserveWindow && wasmViewer.push_bake_update_preserving_window) {
-              wasmViewer.push_bake_update_preserving_window(result);
-            } else {
-              wasmViewer.push_bake_update(result);
-            }
-            showComputeIndicator(99, `渲染 ${fmtMm(job.mm)}`);
-            statusEl.textContent = `${label} · 渲染中 · 99.0%`;
-            await waitForRenderedFrames();
-            if (token !== previewGeneration || recordAsset() !== asset) continue;
-            window.__bakeScalarStats = null;
+            if (token !== previewGeneration || !result) continue;
             const parsed = parseFaceScalars(result);
-            setStandoffRecordLabel(parsed?.standoffMm ?? job.mm);
-            await refreshBakeScalarStats(parsed);
-            if (token !== previewGeneration || recordAsset() !== asset) continue;
-            hideComputeIndicator();
-            renderStatus({
-              state: "done",
-              message: `Full surface recompute · ${fmtMm(job.mm)}`
-                + (job.preserveWindow ? " · shared density colour scale" : ""),
-              percent: 100,
-              current: parsed?.total ?? 0,
-              total: parsed?.total ?? 0,
-              standoffMm: parsed?.standoffMm ?? job.mm,
-              densityMode,
+            if (!parsed) throw new Error("invalid live result");
+            const completed = rememberLatestResult(
+              result,
+              parsed,
+              previewSourceSet(),
+            );
+            if (token !== previewGeneration) continue;
+            await renderCompletedResult(completed, {
+              preserveWindow: job.preserveWindow,
+              generation: job.generation,
+              message: label,
             });
           } catch (e) {
             if (token === previewGeneration) {
@@ -1146,37 +1275,20 @@
       }
     }
 
-    async function staticStatus(signal) {
-      const parsed = parseFaceScalars(await loadRecordBytes(recordAsset(), signal));
-      if (!parsed) throw new Error("invalid RHGF v5 record");
-      return {
-        state: "done",
-        done: true,
-        message: `Static demo · precomputed ${fmtMm(parsed.standoffMm)} record`,
-        percent: 100,
-        current: parsed.total,
-        total: parsed.total,
-        standoffMm: parsed.standoffMm,
-        densityMode,
-        parsed,
-      };
-    }
-
     async function pollStatus() {
+      if (STATIC_DEMO) return null;
       const generation = recordGeneration;
       const api = bakeApi;
       if (statusAbort) statusAbort.abort();
       const controller = new AbortController();
       statusAbort = controller;
       try {
-        const s = STATIC_DEMO
-          ? await staticStatus(controller.signal)
-          : await (await fetch(`${api}/status`, {
-            cache: "no-store",
-            signal: controller.signal,
-          })).json();
+        const s = await (await fetch(`${api}/status`, {
+          cache: "no-store",
+          signal: controller.signal,
+        })).json();
         if (generation !== recordGeneration) return null;
-        if (!STATIC_DEMO || wasmViewer) renderStatus(s);
+        if (wasmViewer) renderStatus(s);
         await syncRecordFromStatus(s, generation);
         return s;
       } catch (e) {
@@ -1248,16 +1360,30 @@
       reloadBtn.disabled = true;
       compareKey = "";
       window.__bakeScalarStats = null;
-      statusEl.textContent = "Reloading the current record colours…";
+      statusEl.textContent = "Reloading the latest temporary result…";
       try {
-        await pullBakeIntoWasm(wasmViewer, recordGeneration, "", true);
-        await pollStatus();
+        if (STATIC_DEMO) {
+          const result = latestResults.get(activeResultKey());
+          if (!result) {
+            statusEl.textContent = "当前算法还没有可重渲染的临时结果。";
+            return;
+          }
+          await renderCompletedResult(result, {
+            preserveWindow: true,
+            generation: recordGeneration,
+            message: `Temporary result · ${fmtMm(result.standoffMm)}`,
+          });
+        } else {
+          await pullBakeIntoWasm(wasmViewer, recordGeneration, "", true);
+          await pollStatus();
+        }
       } finally {
         reloadBtn.disabled = false;
       }
     });
     densBtn.addEventListener("click", () => {
       densityMode = nextDensityMode();
+      densitySelections.set(algo, densityMode);
       recordGeneration++;
       applyAlgoLabels();
       compareKey = "";
@@ -1281,15 +1407,15 @@
       };
       setTimeout(pollLoop, 1000);
     }
-    const initialStatus = await pollStatus();
+    const initialStatus = STATIC_DEMO ? null : await pollStatus();
 
     if (!navigator.gpu) {
       show("WebGPU is required (navigator.gpu is unavailable in this browser).");
     } else {
       try {
         // Observation height for this session: an explicit ?standoff= wins,
-        // otherwise the height the record on disk was baked at (the status
-        // poll adopts it a moment later), otherwise the shared default.
+        // otherwise the shared default. The hosted viewer has no packaged
+        // record whose height could override this.
         const urlStandoff = Number(new URLSearchParams(location.search).get("standoff"));
         if (
           Number.isFinite(urlStandoff)
@@ -1302,10 +1428,12 @@
         await wasm.default({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
         wasmViewer = wasm;
         let bakeBytes = new Uint8Array(28);
-        try {
-          bakeBytes = await loadRecordBytes(recordAsset());
-        } catch {
-          /* start gray; the bake may create the file */
+        if (!STATIC_DEMO) {
+          try {
+            bakeBytes = await loadRecordBytes(recordAsset());
+          } catch {
+            /* start gray; the local bake may create the file */
+          }
         }
         wasm.run_with_bake(bakeBytes);
         await waitForRenderedFrames();
@@ -1317,15 +1445,18 @@
           });
           await livePreview.init();
         }
-        if (initialStatus?.done) {
+        if (!STATIC_DEMO && initialStatus?.done) {
           await refreshBakeScalarStats(
             parseFaceScalars(bakeBytes) ?? null,
           );
           renderStatus(initialStatus);
           hideComputeIndicator();
+        } else if (STATIC_DEMO) {
+          setBarPercent(0);
+          statusEl.textContent = "尚未计算。点击 Recompute，或切换算法开始计算。";
         } else {
           setBarPercent(0);
-          statusEl.textContent = "No precomputed record is available.";
+          statusEl.textContent = "No completed local solver result is available.";
         }
         bakeBtn.disabled = false;
         bakeBtn.textContent = "Recompute";

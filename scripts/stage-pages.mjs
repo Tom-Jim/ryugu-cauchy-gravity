@@ -12,15 +12,6 @@ const files = [
   "assets/models/ryugu.glb",
   "assets/live/face_observers.bin",
   "assets/live/preview_sources.bin",
-  "assets/records/gradient_faces.bin",
-  "assets/records/mascon_faces.bin",
-  "assets/records/mascon_elliptic_faces.bin",
-  "assets/records/rtfp_faces.bin",
-  "assets/records/rtfp_constant_faces.bin",
-  "assets/records/carlson_cauchy_faces.bin",
-  "assets/records/carlson_constant_faces.bin",
-  "assets/records/carlsonalpha_elliptic_faces.bin",
-  "assets/records/carlsonalpha_constant_faces.bin",
 ];
 
 rmSync(out, { recursive: true, force: true });

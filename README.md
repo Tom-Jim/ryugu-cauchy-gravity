@@ -311,23 +311,23 @@ stack on WASM. Neither `pkg/` nor `dist/` is committed to the repository.
 
 Five algorithm tabs, one per solver, each with the same two-segment vertical
 observation-height slider: 1 mm → 500 mm over the lower half of the track and
-1 m → 32 m over the upper half. On the hosted Pages build the slider stays
-interactive after the static files load: the recorded 16 m height loads the
-exact per-solver record, while every other height is recomputed from the full
-density-weighted surface mesh in a module Web Worker. The progress bar advances
-as worker chunks complete. `Recompute` forces the full worker path even at the
-recorded height. The local development build still runs the exact solver bake
-at the selected height.
+1 m → 32 m over the upper half. The hosted Pages build computes every selected
+height from the full density-weighted surface mesh in a module Web Worker.
+Completed results stay only in the current tab as temporary in-memory data;
+there is no packaged answer and no persisted browser result. The progress bar
+advances as worker chunks complete, and `Recompute` always starts a fresh run.
 
 Mascon and CarlsonAlpha share the fractional-Cauchy density switch; RT-FP and
-Carlson retain their Cauchy/uniform controls. The viewer compares each record
-face by face with the reference that uses the same density model.
+Carlson retain their Cauchy/uniform controls. The comparison panel uses only
+the latest completed temporary result for each algorithm/density pair, and it
+compares only when both results were computed at the same observation height.
+Otherwise it states which height the reference algorithm must be set to.
 
 > A note on the uniform-density reference at extreme standoffs: the C++
 > polyhedral bake is the slow path within a millimetre of the terrain, so the
 > near-field comparison in this project is made against the two GPU solvers.
 
-## Reproducing a record
+## Reproducing an offline scratch record
 
 ```sh
 OBJ=../Ryugu_wasm/assets/models/SHAPE_SFM_200k_v20180804.obj
@@ -397,7 +397,7 @@ src/server/          Bun development server, one endpoint per solver
 src/viewer/          Bevy + WebGPU viewer (Rust, compiled to WASM)
 src/web/             single-page control surface
 assets/density/      the density field (TOML)
-assets/records/      finished per-face records, one per solver and density
+assets/records/      ignored local scratch records (never deployed)
 tools/               record comparison and other helpers
 docs/images/         figures used by this README
 ```

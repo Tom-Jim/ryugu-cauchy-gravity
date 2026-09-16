@@ -1,11 +1,10 @@
 /**
  * Browser-side full-face gravity-gradient recomputation.
  *
- * Exact solver records are used only at their recorded standoff. At every other
- * height this module evaluates the density-weighted surface mass distribution
- * directly: nearby triangles use the closed-form polyhedral face integral and
- * distant Barnes-Hut nodes use a monopole approximation. Nothing is rescaled
- * face by face from one of the precomputed records.
+ * This module evaluates the density-weighted surface mass distribution directly:
+ * nearby triangles use the closed-form polyhedral face integral and distant
+ * Barnes-Hut nodes use a monopole approximation. It owns an in-memory output
+ * buffer, so the hosted viewer does not need a packaged solver answer.
  */
 
 const G = 6.67430e-11;
@@ -441,21 +440,30 @@ class FullSurfaceEngine {
 
   async evaluate({ sourceSet, heightMm, referenceBytes, onProgress, signal }) {
     if (!this.tree || !this.sources) throw new Error("live-preview is not initialized");
-    const bytes = referenceBytes.slice();
+    const bytes = referenceBytes
+      ? referenceBytes.slice()
+      : new Uint8Array(RECORD_HEADER + this.sources.count * 4);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (
+    if (bytes.byteLength < RECORD_HEADER + this.sources.count * 4) {
+      throw new Error("live-preview output buffer is too small");
+    }
+    if (referenceBytes && (
       view.getUint32(0, true) !== 0x52484746
       || view.getUint32(4, true) !== 5
       || view.getUint32(8, true) !== this.sources.count
-      || bytes.byteLength < RECORD_HEADER + this.sources.count * 4
-    ) {
+    )) {
       throw new Error("live-preview reference record is incompatible");
     }
 
     const set = SOURCE_SET[sourceSet] ?? SOURCE_SET.constant;
-    const refHeightMm = view.getFloat32(16, true);
-    const scale = this._sourceScale(set, refHeightMm, view);
+    const refHeightMm = referenceBytes ? view.getFloat32(16, true) : 0;
+    const scale = referenceBytes ? this._sourceScale(set, refHeightMm, view) : 1;
+    view.setUint32(0, 0x52484746, true);
+    view.setUint32(4, 5, true);
+    view.setUint32(8, this.sources.count, true);
     view.setFloat32(16, heightMm, true);
+    view.setFloat32(20, Number.POSITIVE_INFINITY, true);
+    view.setFloat32(24, Number.NEGATIVE_INFINITY, true);
     view.setUint32(12, this.sources.count, true);
     const heightM = heightMm * 1e-3;
     const tensor = [0, 0, 0, 0, 0, 0];
@@ -617,7 +625,7 @@ export class LivePreview {
       return Promise.reject(new Error("live-preview is not initialized"));
     }
     const id = this.nextId++;
-    const bytes = referenceBytes.slice();
+    const bytes = referenceBytes ? referenceBytes.slice() : null;
     return new Promise((resolve, reject) => {
       const onAbort = () => {
         if (!this.pending.delete(id)) return;
@@ -626,10 +634,9 @@ export class LivePreview {
       };
       this.pending.set(id, { resolve, reject, onProgress, signal, onAbort });
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.worker.postMessage(
-        { type: "evaluate", id, sourceSet, heightMm, referenceBytes: bytes },
-        [bytes.buffer],
-      );
+      const message = { type: "evaluate", id, sourceSet, heightMm };
+      if (bytes) message.referenceBytes = bytes;
+      this.worker.postMessage(message, bytes ? [bytes.buffer] : []);
     });
   }
 }
