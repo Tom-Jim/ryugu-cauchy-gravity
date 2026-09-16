@@ -27,6 +27,13 @@ at the same observation height, so the images below are directly comparable.
 | **Mascon · Cauchy · 16 m** | **Werner · uniform · 16 m** |
 | [![Mascon, Cauchy density, 16 m](docs/images/mascon-cauchy-16m.png)](docs/images/mascon-cauchy-16m.png) | [![Werner, uniform density, 16 m](docs/images/werner-uniform-16m.png)](docs/images/werner-uniform-16m.png) |
 
+The generalized CarlsonAlpha path provides the fractional-Cauchy check against
+the voxel solver on the same observation surface:
+
+| **CarlsonAlpha · fractional Cauchy · 16 m** |
+| :---: |
+| [![CarlsonAlpha, fractional Cauchy density, 16 m](docs/images/carlsonalpha-fractional-cauchy-16m.png)](docs/images/carlsonalpha-fractional-cauchy-16m.png) |
+
 At 16 m, Carlson and RT-FP retain the same smooth density structure, while
 Mascon shows visible cell-scale shading. Werner is the uniform-density reference
 that both exact solvers reproduce to `4 × 10⁻⁷`.
