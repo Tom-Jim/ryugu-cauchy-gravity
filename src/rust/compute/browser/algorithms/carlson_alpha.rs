@@ -1,3 +1,4 @@
+impl GpuSolver {
 async fn run_carlson_alpha(
     &mut self,
     constant: bool,
@@ -34,4 +35,6 @@ async fn run_carlson_alpha(
         true,
     )
     .await
+}
+
 }

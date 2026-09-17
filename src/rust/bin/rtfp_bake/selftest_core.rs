@@ -97,7 +97,3 @@ fn selftest(args: &Args) -> Result<(), String> {
     selftest_gpu(args)
 }
 
-/// General-alpha radial finite part against the f64 reference and the Carlson
-/// symmetric-function library. This is the check that keeps `CarlsonAlpha`
-/// distinct from the alpha=1 jump-surface implementation.
-

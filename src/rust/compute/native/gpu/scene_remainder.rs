@@ -1,3 +1,4 @@
+impl Scene {
 /// `G Σ_q ω_q T(u_q) Σ_k w_k R_k(u_q)` for one block of points.
     ///
     /// Runs the whole GPU chain: inside probe → ray intervals → remainder.
@@ -134,13 +135,13 @@
         );
         self.queue.submit(Some(enc.finish()));
         let data = self.read_f32(n * 7 + 1)?;
-        if let Some(i) = data[n * 6..n * 7].iter().position(|inside| *inside != 0.0) {
-            if !allow_inside {
-                return Err(format!(
-                    "observation point {i} of {n} lies inside the mesh; the contact term is not \
-                     enabled for this solver"
-                ));
-            }
+        if let Some(i) = data[n * 6..n * 7].iter().position(|inside| *inside != 0.0)
+            && !allow_inside
+        {
+            return Err(format!(
+                "observation point {i} of {n} lies inside the mesh; the contact term is not \
+                 enabled for this solver"
+            ));
         }
         if data[n * 7] != 0.0 {
             let dropped = data[n * 7].to_bits();
@@ -168,3 +169,4 @@
             .collect())
     }
 
+}

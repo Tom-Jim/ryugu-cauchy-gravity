@@ -21,7 +21,7 @@ type SessionController = {
 // labels the panel shows are rendered by Rust so there is one implementation of
 // every number and every string.
 
-import { computed, createApp, reactive } from "vue/dist/vue.esm-bundler.js";
+import { computed, createApp, reactive } from "vue";
 
 let session: SessionController | null = null;
 let mounted = false;
@@ -55,7 +55,7 @@ export const viewerUi = reactive({
 });
 
 export const saved = reactive({
-  items: [],
+  items: [] as Array<Record<string, any>>,
   loading: false,
   busy: false,
   message: "",
@@ -73,7 +73,8 @@ export const saved = reactive({
 const savedGroups = computed(() => {
   const groups = new Map<string, { algorithm: string; items: Array<Record<string, any>> }>();
   for (const item of saved.items as Array<Record<string, any>>) {
-    const group = groups.get(item.algorithm) ?? { algorithm: item.algorithm, items: [] };
+    const group: { algorithm: string; items: Array<Record<string, any>> } =
+      groups.get(item.algorithm) ?? { algorithm: item.algorithm, items: [] };
     group.items.push(item);
     groups.set(item.algorithm, group);
   }

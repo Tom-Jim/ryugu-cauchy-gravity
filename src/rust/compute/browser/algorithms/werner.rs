@@ -1,3 +1,4 @@
+impl GpuSolver {
 async fn run_werner(
     &mut self,
     start: usize,
@@ -20,4 +21,6 @@ async fn run_werner(
         signal,
     )
     .await
+}
+
 }

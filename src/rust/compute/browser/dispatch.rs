@@ -46,4 +46,4 @@ fn block_size(algorithm: &str) -> usize {
 // Asset parsing
 // ---------------------------------------------------------------------------
 
-/// `parseFaceAsset`: an RWR1/RYC1 record table of 64-byte face records.
+// `parseFaceAsset`: an RWR1/RYC1 record table of 64-byte face records.

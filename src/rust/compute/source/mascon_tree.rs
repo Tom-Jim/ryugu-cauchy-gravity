@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 struct MasconPoint {
     x: u32,
     y: u32,

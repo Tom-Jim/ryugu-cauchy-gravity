@@ -1,3 +1,4 @@
+impl Scene {
 /// `W(x)` (unit density, `G` included) at every observation point.
     pub fn analytic_tensors(&self) -> Result<Vec<Sym6>, String> {
         self.analytic_tensors_impl(self.n_faces, &self.analytic_pipeline, "analytic")
@@ -163,3 +164,4 @@
             .collect())
     }
 
+}

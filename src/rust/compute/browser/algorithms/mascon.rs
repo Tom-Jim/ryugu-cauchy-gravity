@@ -1,3 +1,4 @@
+impl GpuSolver {
 async fn run_mascon(
         &mut self,
         start: usize,
@@ -142,3 +143,4 @@ async fn run_mascon(
         Ok(Some(bytes_to_f32(&raw?, count)))
     }
 
+}

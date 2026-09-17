@@ -153,6 +153,7 @@ pub struct KernelSi {
     pub alpha: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Density {
     kernels: Vec<KernelSi>,
@@ -163,6 +164,7 @@ pub struct Density {
     pub decomposition: DecompositionReport,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DecompositionReport {
     pub original_kernels: usize,

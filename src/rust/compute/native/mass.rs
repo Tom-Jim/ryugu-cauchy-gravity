@@ -257,4 +257,3 @@ pub fn uv_sphere(radius: f64, n_lat: usize) -> Mesh {
     }
     mesh
 }
-

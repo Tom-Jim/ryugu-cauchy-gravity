@@ -66,4 +66,3 @@ pub fn directions(total: usize) -> Vec<([f64; 3], f64)> {
     let n_theta = ((want / 2.0).sqrt().round() as usize).max(2);
     product_rule(n_theta)
 }
-

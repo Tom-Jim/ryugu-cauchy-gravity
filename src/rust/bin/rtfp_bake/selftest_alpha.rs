@@ -88,15 +88,3 @@ fn selftest_carlson_alpha(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The identity the Carlson solver rests on, checked end-to-end on the real mesh:
-/// with one density everywhere every cone weight `ρ_f − ρ_ref` vanishes, so the
-/// 983 040-triangle face list has to collapse back onto `ρ_ref·W(x)` — the same
-/// quantity `analytic.rs`, the Werner bake and the ESA library compute from
-/// entirely different code. This is what proves the per-face weights survive the
-/// trip through the shader and that the mesh faces carry `ρ_ref`.
-///
-/// The star-cone *orientations* are checked separately, and on the unit cube:
-/// a cone only tiles a body that is star-shaped from its apex, and Ryugu is not
-/// (see the coverage/signed-ratio line below), so running the raw cone on the
-/// real mesh would be measuring the body's shape rather than the code.
-

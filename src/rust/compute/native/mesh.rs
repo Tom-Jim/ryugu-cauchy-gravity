@@ -16,9 +16,10 @@ impl Mesh {
         let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
         let model = gltf::Gltf::from_slice(&bytes)
             .map_err(|error| format!("{}: invalid GLB: {error}", path.display()))?;
-        let blob = model.blob.as_deref().ok_or_else(|| {
-            format!("{}: GLB has no binary buffer", path.display())
-        })?;
+        let blob = model
+            .blob
+            .as_deref()
+            .ok_or_else(|| format!("{}: GLB has no binary buffer", path.display()))?;
         let primitive = model
             .meshes()
             .flat_map(|mesh| mesh.primitives())
@@ -46,7 +47,10 @@ impl Mesh {
             .into_u32()
             .collect();
         if !mesh.faces.len().is_multiple_of(3) {
-            return Err(format!("{}: triangle index count is invalid", path.display()));
+            return Err(format!(
+                "{}: triangle index count is invalid",
+                path.display()
+            ));
         }
         Ok(mesh)
     }
@@ -94,11 +98,7 @@ impl Mesh {
         for (index, normal) in normals.iter_mut().enumerate() {
             let length = norm(*normal);
             if length > 1e-30 {
-                *normal = [
-                    normal[0] / length,
-                    normal[1] / length,
-                    normal[2] / length,
-                ];
+                *normal = [normal[0] / length, normal[1] / length, normal[2] / length];
             } else {
                 let point = self.vertex(index);
                 let radius = norm(point);

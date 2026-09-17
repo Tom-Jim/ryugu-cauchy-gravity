@@ -24,9 +24,9 @@ use native::{
 use density::{Density, DensityMode, Normalization};
 use geom::BruteTracer;
 use mesh::Mesh;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
-use tensor::{frobenius, Sym6};
+use tensor::{Sym6, frobenius};
 
 /// Gravitational constant (CODATA 2018), shared by every native solver.
 pub const G: f64 = 6.674_30e-11;
@@ -166,7 +166,7 @@ fn parse_args() -> Result<Args, String> {
                         std::process::exit(0);
                     }
                     Err(e) => Err(e),
-                }
+                };
             }
             "--help" | "-h" => {
                 println!(
@@ -180,10 +180,7 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    if args.solver == Solver::CarlsonAlpha
-        && args.mode == DensityMode::Elliptic
-        && !normalize_set
-    {
+    if args.solver == Solver::CarlsonAlpha && args.mode == DensityMode::Elliptic && !normalize_set {
         args.normalize = Normalization::Raw;
     }
 
@@ -216,9 +213,9 @@ fn main() -> ExitCode {
         selftest(&args)
     } else {
         match args.solver {
-            Solver::Ray => run_raylike(&args, false, "rtfp"),
+            Solver::Ray => run_raylike(&args, false),
             Solver::Carlson => run_carlson(&args),
-            Solver::CarlsonAlpha => run_raylike(&args, true, "carlson-alpha"),
+            Solver::CarlsonAlpha => run_raylike(&args, true),
         }
     };
     match result {
@@ -230,7 +227,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Unit cube (12 triangles) used as the closed-form test body.
+// Unit cube (12 triangles) used as the closed-form test body.
 
 include!("rtfp_bake/selftest_core.rs");
 include!("rtfp_bake/selftest_alpha.rs");

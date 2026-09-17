@@ -12,13 +12,13 @@
 //! bookkeeping. WebGPU has no ray-tracing stage, so the traversal itself is
 //! WGSL — there is no CPU parallel path and no CPU fallback.
 
+use crate::G;
 use crate::analytic::Face;
 use crate::bvh::Bvh;
 use crate::density::KernelSi;
 use crate::mesh::Mesh;
 use crate::quadrature::Dirs;
 use crate::tensor::Sym6;
-use crate::G;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
@@ -289,12 +289,10 @@ pub struct Scene {
     readback_len: usize,
 }
 
-impl Scene {
-    include!("gpu/scene_new.rs");
-    include!("gpu/scene_surface.rs");
-    include!("gpu/scene_remainder.rs");
-    include!("gpu/readback.rs");
-}
+include!("gpu/scene_new.rs");
+include!("gpu/scene_surface.rs");
+include!("gpu/scene_remainder.rs");
+include!("gpu/readback.rs");
 
 fn empty_encoder(label: &str) -> wgpu::CommandEncoderDescriptor<'_> {
     wgpu::CommandEncoderDescriptor { label: Some(label) }

@@ -19,4 +19,3 @@ pub fn add_tensor_term(t: &mut Sym6, u: &[f64; 3], s: f64) {
     t[4] += s * 3.0 * u[0] * u[2];
     t[5] += s * 3.0 * u[1] * u[2];
 }
-

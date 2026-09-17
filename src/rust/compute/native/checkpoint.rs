@@ -69,4 +69,3 @@ pub fn save(path: &Path, tensors: &[Sym6], completed: usize, standoff_mm: f64) -
     fs::write(&temporary, bytes)?;
     fs::rename(temporary, path)
 }
-

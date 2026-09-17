@@ -8,6 +8,4 @@ mod frontend;
 mod render;
 
 pub use frontend::Session;
-pub use render::{
-    push_bake_update, push_bake_update_preserving_window, run_with_bake,
-};
+pub use render::{push_bake_update, push_bake_update_preserving_window, run_with_bake};

@@ -4372,6 +4372,7 @@ name = "ryugu_cauchy_gravity"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_ecs",
  "bevy_panorbit_camera",
  "console_error_panic_hook",
  "ellip",

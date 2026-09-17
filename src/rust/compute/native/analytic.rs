@@ -36,9 +36,9 @@
 //! onto one GPU thread with no branches. `src/wgsl/compute/werner.wgsl` is the same
 //! arithmetic in f32; `--selftest` compares both against the ESA library.
 
+use crate::G;
 use crate::mesh::Mesh;
 use crate::tensor::Sym6;
-use crate::G;
 
 /// Point-independent per-face data — exactly the buffer the analytic shader
 /// consumes (13 `f32` in, four `vec4` slots per face).

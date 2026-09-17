@@ -9,6 +9,7 @@ pub mod density;
 pub mod esa;
 pub mod geom;
 pub mod gpu;
+#[allow(dead_code)]
 pub mod mascon;
 pub mod mass;
 pub mod mesh;

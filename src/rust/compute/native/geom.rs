@@ -32,10 +32,11 @@ impl<'a> BruteTracer<'a> {
             let v0 = self.mesh.vertex(i0 as usize);
             let v1 = self.mesh.vertex(i1 as usize);
             let v2 = self.mesh.vertex(i2 as usize);
-            if let Some(t) = intersect(v0, v1, v2, o, d) {
-                if t > t_min && t < t_max {
-                    out.push(t);
-                }
+            if let Some(t) = intersect(v0, v1, v2, o, d)
+                && t > t_min
+                && t < t_max
+            {
+                out.push(t);
             }
         }
         out.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -80,10 +81,11 @@ pub fn bvh_crossings(
                 let v0 = mesh.vertex(i0 as usize);
                 let v1 = mesh.vertex(i1 as usize);
                 let v2 = mesh.vertex(i2 as usize);
-                if let Some(t) = intersect(v0, v1, v2, o, d) {
-                    if t > t_min && t < t_max {
-                        out.push(t);
-                    }
+                if let Some(t) = intersect(v0, v1, v2, o, d)
+                    && t > t_min
+                    && t < t_max
+                {
+                    out.push(t);
                 }
             }
         } else {
@@ -116,11 +118,7 @@ fn intersect(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], o: [f64; 3], d: [f64; 3])
         return None;
     }
     let t = dot(e2, qvec) * inv;
-    if t.is_finite() {
-        Some(t)
-    } else {
-        None
-    }
+    if t.is_finite() { Some(t) } else { None }
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

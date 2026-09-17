@@ -38,6 +38,7 @@ struct Triangle {
     a: Vec3,
     b: Vec3,
     c: Vec3,
+    #[allow(dead_code)]
     center: Vec3,
     normal: Vec3,
 }

@@ -1,3 +1,4 @@
+impl Scene {
 /// Upload the mesh, the BVH and the observation points once.
     // Every argument is a distinct immutable input buffer of the upload, and
     // bundling them into a builder would only move the list one level up.
@@ -155,3 +156,4 @@
         }
     }
 
+}

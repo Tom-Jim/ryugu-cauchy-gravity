@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 fn run(args: &Args) -> Result<(), String> {
     run_raylike(args, false)
 }
@@ -32,9 +33,7 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
 
     let density = match args.mode {
         DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
-        DensityMode::Elliptic => {
-            Density::from_toml_for_mode(&args.density, &mesh, args.normalize, args.mode)?
-        }
+        DensityMode::Elliptic => Density::from_toml(&args.density, &mesh, args.normalize)?,
         DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
     print_mass_report(&density, args.mode);

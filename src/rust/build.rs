@@ -18,8 +18,9 @@ fn validate_wgsl(dir: &Path) {
             println!("cargo:rerun-if-changed={}", path.display());
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("cannot read WGSL {}: {error}", path.display()));
-            let module = naga::front::wgsl::parse_str(&source)
-                .unwrap_or_else(|error| panic!("WGSL parse failed for {}: {error}", path.display()));
+            let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| {
+                panic!("WGSL parse failed for {}: {error}", path.display())
+            });
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
                 naga::valid::Capabilities::all(),

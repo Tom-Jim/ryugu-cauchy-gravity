@@ -1,3 +1,4 @@
+impl GpuSolver {
 async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         let key = format!("{asset_url}:mesh");
         if self.mesh_buffers.contains_key(&key) {
@@ -404,3 +405,4 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         Ok(Some(bytes_to_f32(&raw, count)))
     }
 
+}

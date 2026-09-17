@@ -7,10 +7,10 @@
 //! JavaScript: the shaders are embedded at compile time and every dispatch,
 //! buffer copy and readback is issued through `wgpu`.
 
+use super::source::RuntimeSource;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use super::source::RuntimeSource;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -112,16 +112,14 @@ struct GpuSolver {
     mascon_buffers: HashMap<String, Rc<MasconBuffers>>,
 }
 
-impl GpuSolver {
-    include!("device.rs");
-    include!("surface.rs");
-    include!("ray.rs");
-    include!("algorithms/werner.rs");
-    include!("algorithms/mascon.rs");
-    include!("algorithms/rtfp.rs");
-    include!("algorithms/carlson.rs");
-    include!("algorithms/carlson_alpha.rs");
-}
+include!("device.rs");
+include!("surface.rs");
+include!("ray.rs");
+include!("algorithms/werner.rs");
+include!("algorithms/mascon.rs");
+include!("algorithms/rtfp.rs");
+include!("algorithms/carlson.rs");
+include!("algorithms/carlson_alpha.rs");
 
 fn bytes_to_f32(bytes: &[u8], count: usize) -> Vec<f32> {
     (0..count)

@@ -1,3 +1,4 @@
+impl Scene {
 fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
         let bytes = count * 4;
         if bytes > self.readback_len {
@@ -37,3 +38,4 @@ fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
         Ok(out)
     }
 
+}

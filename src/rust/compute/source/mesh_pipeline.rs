@@ -60,15 +60,12 @@ fn write_werner(triangles: &[Triangle]) -> Vec<u8> {
     }
     out.bytes
 }
-
 #[derive(Clone, Copy)]
 struct BvhBounds {
     low: Vec3,
     high: Vec3,
     centroid: Vec3,
 }
-
-#[derive(Clone, Copy)]
 struct BvhNode {
     min: Vec3,
     max: Vec3,
@@ -322,5 +319,3 @@ fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Vec<u8> {
     }
     out.bytes
 }
-
-#[derive(Clone, Copy)]

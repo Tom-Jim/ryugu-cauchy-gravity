@@ -129,7 +129,3 @@ fn selftest_cross_solver(mesh: &Mesh) -> Result<(), String> {
     }
     Ok(())
 }
-
-/// Closed form vs the ESA library on the real mesh, at every standoff the UI
-/// slider can ask for. The symmetry-axis cube cases pass even with the classic
-/// `h²`-for-`L²` slip; this is the test that catches it.

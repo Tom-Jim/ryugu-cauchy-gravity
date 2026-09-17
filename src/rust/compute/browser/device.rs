@@ -1,3 +1,4 @@
+impl GpuSolver {
 async fn new(base_url: String) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -303,3 +304,5 @@ async fn new(base_url: String) -> Result<Self, String> {
         readback.destroy();
         Ok(data)
     }
+
+}
