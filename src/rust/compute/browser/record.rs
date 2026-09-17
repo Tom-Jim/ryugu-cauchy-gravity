@@ -28,7 +28,7 @@ fn record_face_count(bytes: &[u8]) -> usize {
 fn make_record(checkpoint: Option<&[u8]>, height_mm: f64, count: usize) -> Vec<u8> {
     let needed = RECORD_HEADER + count * 4;
     let mut bytes = match checkpoint {
-        Some(existing) if existing.len() >= needed => existing.to_vec(),
+        Some(existing) if existing.len() >= needed => existing[..needed].to_vec(),
         _ => vec![0u8; needed],
     };
     let compatible = bytes.len() >= needed
@@ -38,6 +38,9 @@ fn make_record(checkpoint: Option<&[u8]>, height_mm: f64, count: usize) -> Vec<u
         && (f32_at(&bytes, 16) as f64 - height_mm).abs() <= 1e-3;
     if !compatible {
         bytes.fill(0);
+        for scalar in bytes[RECORD_HEADER..].chunks_exact_mut(4) {
+            scalar.copy_from_slice(&f32::NAN.to_le_bytes());
+        }
     }
     set_u32(&mut bytes, 0, RECORD_MAGIC);
     set_u32(&mut bytes, 4, RECORD_VERSION);
@@ -48,14 +51,56 @@ fn make_record(checkpoint: Option<&[u8]>, height_mm: f64, count: usize) -> Vec<u
     bytes
 }
 
+fn refresh_scalar_range(record: &mut [u8], completed: usize) {
+    let count = completed.min(record_face_count(record));
+    let mut minimum = f32::INFINITY;
+    let mut maximum = f32::NEG_INFINITY;
+    for index in 0..count {
+        let value = f32_at(record, RECORD_HEADER + index * 4);
+        if value.is_finite() {
+            minimum = minimum.min(value);
+            maximum = maximum.max(value);
+        }
+    }
+    set_f32(record, 20, minimum);
+    set_f32(record, 24, maximum);
+}
+
+/// Align a resumed record with the requested prefix. Any stale tail is made
+/// explicitly incomplete so the RHGF consumer never treats zero-filled faces as
+/// computed data.
+fn prepare_record(record: &mut [u8], requested: usize) -> usize {
+    let face_count = record_face_count(record);
+    let recorded = u32_at(record, 12) as usize;
+    let mut completed = requested.min(recorded).min(face_count);
+    if let Some(first_incomplete) = (0..completed)
+        .find(|index| !f32_at(record, RECORD_HEADER + index * 4).is_finite())
+    {
+        completed = first_incomplete;
+    }
+    for index in completed..face_count {
+        set_f32(record, RECORD_HEADER + index * 4, f32::NAN);
+    }
+    set_completed(record, completed);
+    refresh_scalar_range(record, completed);
+    completed
+}
+
 fn set_completed(bytes: &mut [u8], completed: usize) {
     let clamped = completed.min(record_face_count(bytes));
     set_u32(bytes, 12, clamped as u32);
 }
 
 fn write_scalars(record: &mut [u8], offset: usize, scalars: &[f32]) {
+    let mut minimum = f32_at(record, 20);
+    let mut maximum = f32_at(record, 24);
     for (index, value) in scalars.iter().enumerate() {
         set_f32(record, RECORD_HEADER + (offset + index) * 4, *value);
+        if value.is_finite() {
+            minimum = minimum.min(*value);
+            maximum = maximum.max(*value);
+        }
     }
+    set_f32(record, 20, minimum);
+    set_f32(record, 24, maximum);
 }
-

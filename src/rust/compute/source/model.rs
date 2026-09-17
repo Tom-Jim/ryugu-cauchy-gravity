@@ -88,6 +88,23 @@ fn parse_glb_model(glb: &[u8]) -> Result<Vec<Triangle>, String> {
     if indices.len() % 3 != 0 {
         return Err("GLB triangle index count is not divisible by three".into());
     }
+    let mut signed_six_volume = 0.0f64;
+    for face in indices.chunks_exact(3) {
+        let a = vertices
+            .get(face[0] as usize)
+            .copied()
+            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[0], vertices.len()))?;
+        let b = vertices
+            .get(face[1] as usize)
+            .copied()
+            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[1], vertices.len()))?;
+        let c = vertices
+            .get(face[2] as usize)
+            .copied()
+            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[2], vertices.len()))?;
+        signed_six_volume += dot(a, cross(b, c));
+    }
+    let reverse_winding = signed_six_volume < 0.0;
     let mut triangles = Vec::with_capacity(indices.len() / 3);
     for face in indices.chunks_exact(3) {
         let point = |index: u32| {
@@ -96,7 +113,14 @@ fn parse_glb_model(glb: &[u8]) -> Result<Vec<Triangle>, String> {
                 .copied()
                 .ok_or_else(|| format!("GLB index {index} exceeds {} vertices", vertices.len()))
         };
-        triangles.push(make_triangle(point(face[0])?, point(face[1])?, point(face[2])?));
+        let a = point(face[0])?;
+        let b = point(face[1])?;
+        let c = point(face[2])?;
+        triangles.push(if reverse_winding {
+            make_triangle(a, c, b)
+        } else {
+            make_triangle(a, b, c)
+        });
     }
     if triangles.len() != FACE_COUNT as usize {
         return Err(format!(

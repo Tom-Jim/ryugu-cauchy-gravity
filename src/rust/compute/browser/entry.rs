@@ -60,7 +60,7 @@ impl ComputeEngine {
             .map(|array| array.to_vec());
 
         let mut bytes = make_record(checkpoint_bytes.as_deref(), height_mm, FACE_COUNT);
-        set_completed(&mut bytes, start_face);
+        let start_face = prepare_record(&mut bytes, start_face);
         let mut completed = start_face;
         let mut block_counter = 0usize;
 
@@ -156,6 +156,24 @@ impl ComputeEngine {
             let Some(scalars) = scalars else {
                 return Ok(JsValue::NULL);
             };
+            let expected = block_end - block_start;
+            if scalars.len() != expected {
+                return Err(JsValue::from_str(&format!(
+                    "{algorithm} returned {} scalars for a {expected}-face block",
+                    scalars.len()
+                )));
+            }
+            if let Some((offset, value)) = scalars
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| !value.is_finite())
+            {
+                return Err(JsValue::from_str(&format!(
+                    "{algorithm} produced a non-finite scalar at face {} ({value})",
+                    block_start + offset
+                )));
+            }
             write_scalars(&mut bytes, block_start, &scalars);
             completed = block_end;
             set_completed(&mut bytes, completed);

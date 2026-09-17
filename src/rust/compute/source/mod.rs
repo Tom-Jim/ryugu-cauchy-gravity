@@ -9,7 +9,6 @@ use std::collections::HashMap;
 const FACE_COUNT: u32 = 196_608;
 const GRID_SIZE: usize = 192;
 const CONSTANT_DENSITY: f64 = 1190.0;
-const CAUCHY_TARGET_MASS: f64 = 4.50e11;
 const KM_TO_M: f64 = 1000.0;
 const EPS: f64 = 1e-12;
 
@@ -44,32 +43,36 @@ impl RuntimeSource {
     }
 
     pub fn rtfp(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
+        let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
         let kernels = normalize_kernels(
             &self.triangles,
-            &parse_kernels_text(cauchy_toml, "cauchy.toml")?,
-            CAUCHY_TARGET_MASS,
-        );
+            &density.kernels,
+            density.total_mass_target,
+        )?;
         Ok(build_mesh_pipeline(&self.triangles, &kernels))
     }
 
     pub fn carlson(&self, cauchy_toml: Option<&str>) -> Result<Vec<u8>, String> {
         let (kernels, mode) = match cauchy_toml {
-            Some(text) => (
-                normalize_kernels(
-                    &self.triangles,
-                    &parse_kernels_text(text, "cauchy.toml")?,
-                    CAUCHY_TARGET_MASS,
-                ),
-                CarlsonMode::Cauchy,
-            ),
+            Some(text) => {
+                let density = parse_density_text(text, "cauchy.toml")?;
+                (
+                    normalize_kernels(
+                        &self.triangles,
+                        &density.kernels,
+                        density.total_mass_target,
+                    )?,
+                    CarlsonMode::Cauchy,
+                )
+            }
             None => (Vec::new(), CarlsonMode::Constant),
         };
         build_carlson_faces(&self.triangles, &kernels, mode, CONSTANT_DENSITY)
     }
 
     pub fn carlson_alpha(&self, elliptic_toml: &str) -> Result<Vec<u8>, String> {
-        let kernels = parse_kernels_text(elliptic_toml, "cauchy_elliptic.toml")?;
-        Ok(build_mesh_pipeline(&self.triangles, &kernels))
+        let density = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
+        Ok(build_mesh_pipeline(&self.triangles, &density.kernels))
     }
 
     pub fn mascon(
@@ -77,9 +80,14 @@ impl RuntimeSource {
         cauchy_toml: &str,
         elliptic_toml: &str,
     ) -> Result<(Vec<u8>, Vec<u8>), String> {
-        let cauchy = parse_kernels_text(cauchy_toml, "cauchy.toml")?;
-        let elliptic = parse_kernels_text(elliptic_toml, "cauchy_elliptic.toml")?;
-        let points = build_mascon(&self.triangles, &cauchy, &elliptic)?;
+        let cauchy = parse_density_text(cauchy_toml, "cauchy.toml")?;
+        let elliptic = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
+        let points = build_mascon(
+            &self.triangles,
+            &cauchy.kernels,
+            &elliptic.kernels,
+            cauchy.total_mass_target,
+        )?;
         let source = parse_mascon_bytes(&points, "runtime Mascon source")?;
         let (tree, _, _) = build_mascon_tree(&source);
         Ok((points, tree))

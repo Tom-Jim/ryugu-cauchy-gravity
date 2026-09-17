@@ -73,20 +73,44 @@ fn tri_hit(o: vec3<f32>, d: vec3<f32>, v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f3
     return -1.0;
 }
 
-fn slab_hit(node: u32, o: vec3<f32>, inv_d: vec3<f32>, t_lo: f32, t_hi: f32) -> bool {
+fn axis_interval(lo: f32, hi: f32, origin: f32, direction: f32) -> vec2<f32> {
+    if (abs(direction) < 1e-20) {
+        if (origin < lo || origin > hi) {
+            return vec2<f32>(1.0, -1.0);
+        }
+        return vec2<f32>(-1e30, 1e30);
+    }
+    let a = (lo - origin) / direction;
+    let b = (hi - origin) / direction;
+    return vec2<f32>(min(a, b), max(a, b));
+}
+
+fn slab_hit(node: u32, o: vec3<f32>, d: vec3<f32>, t_lo: f32, t_hi: f32) -> bool {
     let lo = nodes[2u * node].xyz;
     let hi = nodes[2u * node + 1u].xyz;
-    let a = (lo - o) * inv_d;
-    let b = (hi - o) * inv_d;
-    let t0 = min(a, b);
-    let t1 = max(a, b);
-    let near = max(max(t0.x, t0.y), max(t0.z, t_lo));
-    let far = min(min(t1.x, t1.y), min(t1.z, t_hi));
+    let tx = axis_interval(lo.x, hi.x, o.x, d.x);
+    let ty = axis_interval(lo.y, hi.y, o.y, d.y);
+    let tz = axis_interval(lo.z, hi.z, o.z, d.z);
+    let near = max(max(tx.x, ty.x), max(tz.x, t_lo));
+    let far = min(min(tx.y, ty.y), min(tz.y, t_hi));
     return far >= near;
+}
+
+fn same_crossing(a: f32, b: f32) -> bool {
+    let scale = max(max(abs(a), abs(b)), 1.0);
+    return abs(a - b) <= max(1e-5, 8e-7 * scale);
 }
 
 /// Insert `t` into the ascending hit list, keeping at most `MAX_HITS`.
 fn insert_hit(hits: ptr<function, array<f32, MAX_HITS>>, n: ptr<function, u32>, t: f32) {
+    for (var j = 0u; j < *n; j = j + 1u) {
+        // Adjacent triangles share an edge crossing. It is one boundary event,
+        // not two intervals; retaining both corrupts parity and can erase the
+        // following interior segment.
+        if (same_crossing((*hits)[j], t)) {
+            return;
+        }
+    }
     var i = *n;
     if (i >= MAX_HITS) {
         atomicAdd(&out_inside_overflow[g.n_points], 1u);
@@ -115,7 +139,6 @@ fn trace(
     n_hits: ptr<function, u32>,
 ) {
     *n_hits = 0u;
-    let inv_d = 1.0 / d;
     var t_hi = g.t_max;
     var stack: array<u32, STACK>;
     var sp = 0u;
@@ -127,7 +150,7 @@ fn trace(
         }
         sp = sp - 1u;
         let node = stack[sp];
-        if (!slab_hit(node, o, inv_d, g.t_min, t_hi)) {
+        if (!slab_hit(node, o, d, g.t_min, t_hi)) {
             continue;
         }
         let link = links[node];
@@ -145,11 +168,18 @@ fn trace(
                     }
                 }
             }
-        } else if (sp + 2u <= STACK) {
-            stack[sp] = link.x;
-            sp = sp + 1u;
-            stack[sp] = link.y;
-            sp = sp + 1u;
+        } else {
+            if (sp + 2u <= STACK) {
+                stack[sp] = link.x;
+                sp = sp + 1u;
+                stack[sp] = link.y;
+                sp = sp + 1u;
+            } else {
+                // Never turn a capacity failure into a plausible partial
+                // integral. The Rust coordinator reads this counter and fails
+                // the block with a diagnostic.
+                atomicAdd(&out_inside_overflow[g.n_points], 1u);
+            }
         }
     }
 }

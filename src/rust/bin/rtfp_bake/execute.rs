@@ -1,9 +1,18 @@
-#[allow(dead_code)]
-fn run(args: &Args) -> Result<(), String> {
-    run_raylike(args, false)
+#[derive(Clone, Copy)]
+enum RayAlgorithm {
+    Rtfp,
+    CarlsonAlpha,
 }
 
-fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
+fn run_rtfp(args: &Args) -> Result<(), String> {
+    run_ray_algorithm(args, RayAlgorithm::Rtfp)
+}
+
+fn run_carlson_alpha(args: &Args) -> Result<(), String> {
+    run_ray_algorithm(args, RayAlgorithm::CarlsonAlpha)
+}
+
+fn run_ray_algorithm(args: &Args, algorithm: RayAlgorithm) -> Result<(), String> {
     let standoff_m = args.standoff_mm * 1e-3;
     let mesh =
         Mesh::load_glb(&args.mesh, KM_TO_M).map_err(|e| format!("{}: {e}", args.mesh.display()))?;
@@ -13,7 +22,7 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
     println!("mesh: {nv} vertices, {nf} faces (meters)");
     println!(
         "solver={} mode={:?} directions={}",
-        if general_alpha {
+        if matches!(algorithm, RayAlgorithm::CarlsonAlpha) {
             "carlson-alpha"
         } else {
             "rtfp"
@@ -32,8 +41,14 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
     let t_max = (radius * 4.0) as f32;
 
     let density = match args.mode {
-        DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
-        DensityMode::Elliptic => Density::from_toml(&args.density, &mesh, args.normalize)?,
+        DensityMode::Cauchy | DensityMode::Elliptic
+            if matches!(algorithm, RayAlgorithm::CarlsonAlpha) =>
+        {
+            Density::from_toml_general_alpha(&args.density, &mesh, args.normalize)?
+        }
+        DensityMode::Cauchy | DensityMode::Elliptic => {
+            Density::from_toml(&args.density, &mesh, args.normalize)?
+        }
         DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
     };
     print_mass_report(&density, args.mode);
@@ -117,11 +132,15 @@ fn run_raylike(args: &Args, general_alpha: bool) -> Result<(), String> {
                 println!("PROGRESS_R {hi} {nv}");
                 continue;
             }
-            let w_block = scene.analytic_tensors_block(lo, hi)?;
-            let remainder = if general_alpha {
-                scene.block_carlson_alpha(&points[lo..hi], &dirs, kernels, t_max, t_min)?
-            } else {
-                scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?
+            let (w_block, remainder) = match algorithm {
+                RayAlgorithm::Rtfp => (
+                    scene.rtfp_analytic_tensors_block(lo, hi)?,
+                    scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?,
+                ),
+                RayAlgorithm::CarlsonAlpha => (
+                    scene.carlson_alpha_analytic_tensors_block(lo, hi)?,
+                    scene.block_carlson_alpha(&points[lo..hi], &dirs, kernels, t_max, t_min)?,
+                ),
             };
             for (i, rem) in remainder.into_iter().enumerate() {
                 let vi = lo + i;

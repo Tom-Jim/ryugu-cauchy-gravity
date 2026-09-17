@@ -175,7 +175,9 @@ pub fn volume_centroid(mesh: &Mesh) -> [f64; 3] {
             ];
             let r2 = dot(y, y);
             for k in 0..3 {
-                acc[k] += w * 0.5 * r2 * n[k];
+                // `n` is the raw cross product with magnitude 2·area. The
+                // divergence field contributes another 1/2, hence 1/4 here.
+                acc[k] += w * 0.25 * r2 * n[k];
             }
         }
     }

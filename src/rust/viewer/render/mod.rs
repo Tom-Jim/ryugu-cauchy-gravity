@@ -26,7 +26,7 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use gradient::{
     BakePaint, DisplayWindow, colormap_scalar, display_window_for, ensure_base_colors,
     explode_mesh_for_flat_faces, paint_face_on_colors, push_bake_bytes,
-    push_bake_bytes_preserving_window, take_pending_bake,
+    push_bake_bytes_preserving_window, take_pending_bake, triangle_count,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -58,7 +58,7 @@ type BodyMeshQuery<'w, 's> = Query<
     Without<PaintTarget>,
 >;
 
-/// The largest body mesh, plus the vertex count used to choose it.
+/// The largest body mesh, plus the triangle count used to choose it.
 type BestBody = (
     Entity,
     Handle<Mesh>,
@@ -200,15 +200,14 @@ fn prepare_paint_target(
         let Some(src) = meshes.get(&mesh3d.0) else {
             continue;
         };
-        let n = src.count_vertices();
-        if n == 0 {
+        let Some(n_faces) = triangle_count(src) else {
             continue;
-        }
-        if best.as_ref().is_none_or(|(_, _, c, _)| n > *c) {
+        };
+        if best.as_ref().is_none_or(|(_, _, count, _)| n_faces > *count) {
             best = Some((
                 entity,
                 mesh3d.0.clone(),
-                n,
+                n_faces,
                 material.map(|material| material.0.clone()),
             ));
         }
@@ -351,6 +350,11 @@ fn paint_faces_from_queue(
     mut meshes: ResMut<Assets<Mesh>>,
     targets: Query<&Mesh3d, With<PaintTarget>>,
 ) {
+    // A record is indexed in the source GLB primitive's triangle order. Refuse
+    // a partial prefix paint if the displayed primitive is not that exact mesh.
+    if paint.face_count == 0 || paint.face_count != paint.scalars.len() {
+        return;
+    }
     let range_ok = paint.window.is_valid();
     // Bake complete (or a large backlog): paint the whole queue this frame.
     let budget = if paint.queue.len() > 8_000 {

@@ -2,6 +2,7 @@ fn build_mascon(
     triangles: &[Triangle],
     cauchy_kernels: &[Kernel],
     elliptic_kernels: &[Kernel],
+    cauchy_target_mass: f64,
 ) -> Result<Vec<u8>, String> {
     let mut min: Vec3 = [f64::INFINITY; 3];
     let mut max: Vec3 = [f64::NEG_INFINITY; 3];
@@ -63,8 +64,8 @@ fn build_mascon(
         }
     }
 
-    let cauchy_scale = if CAUCHY_TARGET_MASS > 0.0 && cauchy_raw.abs() > 1e-30 {
-        CAUCHY_TARGET_MASS / cauchy_raw
+    let cauchy_scale = if cauchy_target_mass > 0.0 && cauchy_raw.abs() > 1e-30 {
+        cauchy_target_mass / cauchy_raw
     } else {
         1.0
     };

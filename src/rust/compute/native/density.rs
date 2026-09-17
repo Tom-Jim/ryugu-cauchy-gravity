@@ -84,7 +84,9 @@ impl Normalization {
 /// bookkeeping difference instead of leaving it to be discovered as a solver gap.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MassReport {
-    /// `∫_V ρ dV` with the TOML weights exactly as written.
+    /// `∫_V ρ dV` with the TOML weights exactly as written. This is `NaN` for a
+    /// preserved general-alpha field because the alpha=1 surface reduction does
+    /// not apply to it.
     pub raw_mass: f64,
     /// Weight multiplier that realises the `ρ(0) = bulk_density_ref` convention.
     pub rho0_scale: f64,
@@ -119,8 +121,8 @@ pub struct CauchyKernel {
     pub c: [f64; 3],
     pub sigma: f64,
     pub w: f64,
-    #[serde(default = "default_alpha")]
-    pub alpha: f64,
+    #[serde(default)]
+    pub alpha: Option<f64>,
 }
 
 fn default_alpha() -> f64 {
@@ -160,7 +162,8 @@ pub struct Density {
     pub bulk_density: f64,
     /// Bookkeeping for the chosen normalisation (see [`MassReport`]).
     pub mass: MassReport,
-    /// Error and size of the adaptive α→1 Cauchy decomposition.
+    /// Error and size of the adaptive α→1 Cauchy decomposition. General-alpha
+    /// loads preserve the original kernels and report equal input/output counts.
     pub decomposition: DecompositionReport,
 }
 
@@ -192,6 +195,25 @@ impl Density {
         mesh: &Mesh,
         normalization: Normalization,
     ) -> Result<Self, String> {
+        Self::from_toml_impl(path, mesh, normalization, false)
+    }
+
+    /// Load the original exponents for CarlsonAlpha instead of approximating
+    /// them with alpha=1 kernels for the RT-FP closed form.
+    pub fn from_toml_general_alpha(
+        path: &std::path::Path,
+        mesh: &Mesh,
+        normalization: Normalization,
+    ) -> Result<Self, String> {
+        Self::from_toml_impl(path, mesh, normalization, true)
+    }
+
+    fn from_toml_impl(
+        path: &std::path::Path,
+        mesh: &Mesh,
+        normalization: Normalization,
+        preserve_alpha: bool,
+    ) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let raw: CauchyDensityFile =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -215,28 +237,46 @@ impl Density {
                 c: [k.c[0] * 1000.0, k.c[1] * 1000.0, k.c[2] * 1000.0],
                 sigma: k.sigma / 1000.0,
                 w: k.w,
-                alpha: if k.alpha > 0.0 {
-                    k.alpha
-                } else {
-                    alpha_default
-                },
+                alpha: k.alpha.filter(|alpha| *alpha > 0.0).unwrap_or(alpha_default),
             })
             .collect();
         let radius = crate::body_radius(mesh);
-        let (mut kernels, decomposition) = adaptive_cauchy_decompose(&original_kernels, radius);
+        let (mut kernels, decomposition) = if preserve_alpha {
+            (
+                original_kernels.clone(),
+                DecompositionReport {
+                    original_kernels: original_kernels.len(),
+                    expanded_kernels: original_kernels.len(),
+                    max_peak_error: 0.0,
+                },
+            )
+        } else {
+            adaptive_cauchy_decompose(&original_kernels, radius)
+        };
         let bulk_density = if raw.bulk_density_ref > 0.0 {
             raw.bulk_density_ref
         } else {
             1190.0
         };
         let total_mass_target = raw.total_mass_target.max(0.0);
-        // The volume integral is linear in the weights, so one pass gives both
-        // conventions at once. It runs on the *decomposed* kernels: they are all
-        // α = 1, which is exactly the case `mass::kernel_field_mass`'s closed
-        // form covers. Skipping it for a fractional file (as an earlier revision
-        // did) left `raw_mass` at zero, which silently turned
-        // `--normalize total_mass` into the ρ(0) convention.
-        let raw_mass = mass::kernel_field_mass(mesh, &kernels);
+        let unit_alpha = kernels
+            .iter()
+            .all(|kernel| (kernel.alpha - 1.0).abs() <= 1e-9);
+        if preserve_alpha
+            && !unit_alpha
+            && normalization == Normalization::TotalMass
+            && total_mass_target > 0.0
+        {
+            return Err(
+                "total-mass normalization for a general-alpha field requires a general-alpha mass integral; use --normalize raw or rho0"
+                    .into(),
+            );
+        }
+        let raw_mass = if unit_alpha {
+            mass::kernel_field_mass(mesh, &kernels)
+        } else {
+            f64::NAN
+        };
         let rho0 = densitize(&kernels, &[0.0, 0.0, 0.0]);
         let rho0_scale = if rho0.abs() > 1e-30 {
             bulk_density / rho0
@@ -245,7 +285,9 @@ impl Density {
         };
         let applied_scale = match normalization {
             Normalization::Rho0 => rho0_scale,
-            Normalization::TotalMass if total_mass_target > 0.0 && raw_mass.abs() > 1e-30 => {
+            Normalization::TotalMass
+                if total_mass_target > 0.0 && raw_mass.is_finite() && raw_mass.abs() > 1e-30 =>
+            {
                 total_mass_target / raw_mass
             }
             Normalization::Raw => 1.0,

@@ -235,6 +235,9 @@ pub fn colormap_scalar(window: &DisplayWindow, s: f32) -> Option<[f32; 4]> {
 }
 
 pub fn face_vertex_indices(mesh: &Mesh) -> Option<Vec<u32>> {
+    if mesh.primitive_topology() != bevy::mesh::PrimitiveTopology::TriangleList {
+        return None;
+    }
     if let Some(raw) = mesh.indices() {
         let indices: Vec<u32> = match raw {
             Indices::U16(v) => v.iter().map(|&i| i as u32).collect(),
@@ -250,6 +253,24 @@ pub fn face_vertex_indices(mesh: &Mesh) -> Option<Vec<u32>> {
         return Some((0..n as u32).collect());
     }
     None
+}
+
+/// Triangle count without allocating an expanded index list. The compute source
+/// selects the GLB primitive by index count, so the viewer uses the same metric
+/// before exploding the winning mesh for flat face colours.
+pub fn triangle_count(mesh: &Mesh) -> Option<usize> {
+    if mesh.primitive_topology() != bevy::mesh::PrimitiveTopology::TriangleList {
+        return None;
+    }
+    if let Some(indices) = mesh.indices() {
+        let count = match indices {
+            Indices::U16(values) => values.len(),
+            Indices::U32(values) => values.len(),
+        };
+        return (count >= 3 && count.is_multiple_of(3)).then_some(count / 3);
+    }
+    let count = mesh.count_vertices();
+    (count >= 3 && count.is_multiple_of(3)).then_some(count / 3)
 }
 
 /// Duplicate vertices per face so flat face colors never bleed across shared edges.

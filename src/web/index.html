@@ -3,14 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="ryugu-mode" content="static" />
+  <meta name="ryugu-mode" content="static" />
   <link rel="icon" href="data:," />
   <title>Ryugu · gravity-gradient comparison</title>
   <style>
     html, body { margin: 0; height: 100%; background: #050508; color: #e8e6e3; font-family: ui-sans-serif, system-ui, sans-serif; }
-    #app { display: contents; }
+    #bevy {
+      position: fixed; inset: 0; z-index: 0;
+      width: 100%; height: 100%; display: block; touch-action: none;
+    }
+    #app {
+      position: fixed; inset: 0; z-index: 10;
+      display: block; pointer-events: none;
+    }
     #app[v-cloak] { display: none; }
-    #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
+    #app > *, #saved-panel button, #algo-btn, #panel button, #standoff-range { pointer-events: auto; }
+    #boot-error {
+      position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+      box-sizing: border-box; padding: 2rem; white-space: pre-wrap; overflow: auto;
+      color: #ffd9d9; background: rgba(5,5,8,.94); font: 13px/1.55 ui-monospace, monospace;
+    }
+    #boot-error[hidden] { display: none; }
     #msg { place-items: center; position: fixed; inset: 0; padding: 2rem; text-align: center; background: rgba(5,5,8,.72); z-index: 5; }
     #compute-indicator {
       position: fixed; top: 1rem; left: 1rem; z-index: 6;
@@ -159,6 +172,7 @@
 </head>
 <body>
   <canvas id="bevy"></canvas>
+  <div id="boot-error" role="alert" hidden></div>
   <div id="app" v-cloak>
     <div id="msg" v-show="ui.message.visible">{{ ui.message.text }}</div>
     <div id="compute-indicator" role="status" aria-live="polite"
@@ -240,7 +254,7 @@
     // this file; it loads the WASM module and hands the controller the two Vue
     // stores it presents through.
     import init, { Session } from "./pkg/ryugu_cauchy_gravity.js";
-    import { configureSession, mountViewer, saved, viewerUi } from "./pkg/app.js";
+    import { configureSession, mountViewer, saved, showFatalError, viewerUi } from "./pkg/app.js";
 
     try {
       await init({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
@@ -249,11 +263,7 @@
       mountViewer();
       await session.boot();
     } catch (error) {
-      viewerUi.compute.visible = false;
-      viewerUi.buttons.bake.disabled = true;
-      viewerUi.buttons.bake.text = "Unavailable";
-      viewerUi.message.visible = true;
-      viewerUi.message.text = String(error?.stack || error);
+      showFatalError(error);
     }
   </script>
 </body>

@@ -21,7 +21,10 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn run_ray_pipeline(
+    /// Shared WebGPU buffer/dispatch plumbing for ray-based solvers. Algorithm
+    /// selection happens in each solver module; this function has no mode flag
+    /// and never chooses one numerical kernel on behalf of another.
+    async fn dispatch_ray_pipeline(
         &mut self,
         asset_url: &str,
         start: usize,
@@ -29,7 +32,8 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         height_mm: f64,
         signal: &JsValue,
         near_shader: &str,
-        general_alpha: bool,
+        remainder_shader: &str,
+        solver_label: &str,
     ) -> Result<Option<Vec<f32>>, String> {
         self.mesh_buffers(asset_url).await?;
         let key = format!("{asset_url}:mesh");
@@ -42,12 +46,9 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         let analytic_pipeline = self.pipeline(near_shader, near_shader).await?;
         let inside_pipeline = self.pipeline("rays", "inside_probe").await?;
         let rays_pipeline = self.pipeline("rays", "rays").await?;
-        let remainder_name = if general_alpha {
-            "carlson_alpha"
-        } else {
-            "remainder"
-        };
-        let remainder_pipeline = self.pipeline(remainder_name, remainder_name).await?;
+        let remainder_pipeline = self
+            .pipeline(remainder_shader, remainder_shader)
+            .await?;
         let scalar_pipeline = self.pipeline("tensor_scalar", "ray_scalar").await?;
         let (analytic_groups_x, analytic_groups_y) = point_grid(count);
         let observer = self
@@ -364,7 +365,9 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         }
         self.queue.submit(Some(encoder.finish()));
         if let Some(error) = error_scope.pop().await {
-            return Err(format!("WebGPU ray pipeline failed validation: {error}"));
+            return Err(format!(
+                "WebGPU {solver_label} pipeline failed validation: {error}"
+            ));
         }
 
         // `out_inside_overflow[count]` is the atomic counter `rays` bumps
@@ -398,8 +401,8 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         let overflow = u32::from_le_bytes(raw[count * 4..count * 4 + 4].try_into().unwrap());
         if overflow != 0 {
             return Err(format!(
-                "ray traversal overflowed {overflow} interval slots at height {height_mm} mm; \
-                 reduce the block size or raise MAX_INTERVALS in rays.wgsl"
+                "ray traversal exceeded a hit, interval, or BVH-stack capacity {overflow} times \
+                 at height {height_mm} mm"
             ));
         }
         Ok(Some(bytes_to_f32(&raw, count)))

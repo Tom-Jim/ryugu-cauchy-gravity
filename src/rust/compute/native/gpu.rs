@@ -57,6 +57,7 @@ pub struct Device {
     inside_pipeline: wgpu::ComputePipeline,
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
+    carlson_alpha_near_pipeline: wgpu::ComputePipeline,
     carlson_surface_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
     carlson_alpha_pipeline: wgpu::ComputePipeline,
@@ -134,6 +135,17 @@ impl Device {
             ],
         });
         let analytic_pipeline = pipeline(&device, &analytic_layout, &analytic_module, "rtfp_near");
+        let carlson_alpha_near_module = shader(
+            &device,
+            "carlson_alpha_near",
+            include_str!("../../../wgsl/compute/carlson_alpha_near.wgsl"),
+        );
+        let carlson_alpha_near_pipeline = pipeline(
+            &device,
+            &analytic_layout,
+            &carlson_alpha_near_module,
+            "carlson_alpha_near",
+        );
         let carlson_surface_module = shader(
             &device,
             "carlson_surface",
@@ -185,6 +197,7 @@ impl Device {
             inside_pipeline,
             rays_pipeline,
             analytic_pipeline,
+            carlson_alpha_near_pipeline,
             carlson_surface_pipeline,
             remainder_pipeline,
             carlson_alpha_pipeline,
@@ -270,6 +283,7 @@ pub struct Scene {
     inside_pipeline: wgpu::ComputePipeline,
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
+    carlson_alpha_near_pipeline: wgpu::ComputePipeline,
     carlson_surface_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
     carlson_alpha_pipeline: wgpu::ComputePipeline,

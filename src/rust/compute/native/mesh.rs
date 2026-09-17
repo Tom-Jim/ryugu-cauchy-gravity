@@ -52,6 +52,19 @@ impl Mesh {
                 path.display()
             ));
         }
+        let mut signed_six_volume = 0.0f64;
+        for face in 0..mesh.face_count() {
+            let [i0, i1, i2] = mesh.face(face);
+            signed_six_volume += dot(
+                mesh.vertex(i0 as usize),
+                cross(mesh.vertex(i1 as usize), mesh.vertex(i2 as usize)),
+            );
+        }
+        if signed_six_volume < 0.0 {
+            for face in mesh.faces.chunks_exact_mut(3) {
+                face.swap(1, 2);
+            }
+        }
         Ok(mesh)
     }
 
@@ -138,4 +151,12 @@ fn norm(value: [f64; 3]) -> f64 {
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }

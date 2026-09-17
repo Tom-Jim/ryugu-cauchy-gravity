@@ -8,7 +8,34 @@ impl Scene {
     ///
     /// The full analytic pass is independent of the radial remainder, so a
     /// resumed RT-FP run only evaluates this for points after the saved prefix.
-    pub fn analytic_tensors_block(&self, lo: usize, hi: usize) -> Result<Vec<Sym6>, String> {
+    pub fn rtfp_analytic_tensors_block(
+        &self,
+        lo: usize,
+        hi: usize,
+    ) -> Result<Vec<Sym6>, String> {
+        self.ray_analytic_tensors_block(lo, hi, &self.analytic_pipeline, "rtfp_near_block")
+    }
+
+    pub fn carlson_alpha_analytic_tensors_block(
+        &self,
+        lo: usize,
+        hi: usize,
+    ) -> Result<Vec<Sym6>, String> {
+        self.ray_analytic_tensors_block(
+            lo,
+            hi,
+            &self.carlson_alpha_near_pipeline,
+            "carlson_alpha_near_block",
+        )
+    }
+
+    fn ray_analytic_tensors_block(
+        &self,
+        lo: usize,
+        hi: usize,
+        pipeline: &wgpu::ComputePipeline,
+        label: &str,
+    ) -> Result<Vec<Sym6>, String> {
         let n = hi - lo;
         let (grid_x, grid_y) = grid_2d(n as u32);
         let mut globals = [0u8; 32];
@@ -21,10 +48,10 @@ impl Scene {
 
         let mut enc = self
             .device
-            .create_command_encoder(&empty_encoder("analytic_block"));
+            .create_command_encoder(&empty_encoder(label));
         {
-            let mut pass = enc.begin_compute_pass(&compute_pass("analytic_block"));
-            pass.set_pipeline(&self.analytic_pipeline);
+            let mut pass = enc.begin_compute_pass(&compute_pass(label));
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.analytic_bind, &[]);
             pass.dispatch_workgroups(grid_x, grid_y, 1);
         }

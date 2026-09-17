@@ -4,6 +4,7 @@ const root = join(import.meta.dir, "..", "..", "..");
 const profile = Bun.argv.includes("--dev") ? "dev" : "release";
 const glb = join(root, "assets/models/ryugu.glb");
 const wasm = join(root, "pkg/ryugu_cauchy_gravity_bg.wasm");
+const vueCompiler = join(root, "node_modules/vue/dist/vue.esm-bundler.js");
 
 function readU32(bytes, cursor) {
   let value = 0;
@@ -101,6 +102,15 @@ const bundle = await Bun.build({
   target: "browser",
   format: "esm",
   naming: "app.js",
+  // `app.ts` mounts the template already present in index.html. Vue's default
+  // bundler export is runtime-only and clears that template without compiling
+  // it, leaving the Bevy canvas visible but every control missing.
+  plugins: [{
+    name: "vue-runtime-compiler",
+    setup(build) {
+      build.onResolve({ filter: /^vue$/ }, () => ({ path: vueCompiler }));
+    },
+  }],
   minify: profile === "release",
   sourcemap: profile === "dev" ? "external" : "none",
 });

@@ -59,7 +59,7 @@ impl Tree {
     pub fn load(tree_path: &Path, point_path: &Path) -> Result<Self, String> {
         let tree = fs::read(tree_path).map_err(|e| format!("{}: {e}", tree_path.display()))?;
         let points = fs::read(point_path).map_err(|e| format!("{}: {e}", point_path.display()))?;
-        if u32_at(&tree, 0)? != 0x314d_5452 || u32_at(&tree, 4)? != 1 {
+        if u32_at(&tree, 0)? != 0x314d_5452 || u32_at(&tree, 4)? != 2 {
             return Err("invalid mascon tree header".into());
         }
         if u32_at(&points, 0)? != 0x314d_5952 || u32_at(&points, 4)? != 1 {
@@ -71,7 +71,7 @@ impl Tree {
         if u32_at(&points, 12)? as usize != point_count {
             return Err("mascon tree/point count mismatch".into());
         }
-        let node_bytes = node_count.checked_mul(64).ok_or("node count overflow")?;
+        let node_bytes = node_count.checked_mul(80).ok_or("node count overflow")?;
         let order_offset = 64usize
             .checked_add(node_bytes)
             .ok_or("order offset overflow")?;
@@ -79,7 +79,7 @@ impl Tree {
         if tree.len() < order_offset + order_bytes || points.len() < 64 + point_count * 16 {
             return Err("truncated mascon tree or point asset".into());
         }
-        let mut nodes = Vec::with_capacity(node_count * 16);
+        let mut nodes = Vec::with_capacity(node_count * 20);
         for offset in (64..64 + node_bytes).step_by(4) {
             nodes.push(f32_at(&tree, offset)?);
         }
@@ -114,7 +114,7 @@ impl Tree {
     }
 
     fn node(&self, index: usize, slot: usize) -> f64 {
-        self.nodes[index * 16 + slot] as f64
+        self.nodes[index * 20 + slot] as f64
     }
 
     fn point_position(&self, index: usize, cell: [f64; 3]) -> [f64; 3] {
@@ -203,7 +203,7 @@ impl Tree {
             .max(1e-12);
             let left = self.node(node, 6) as i32;
             let right = self.node(node, 7) as i32;
-            let leaf_count = self.node(node, 12) as usize;
+            let leaf_count = self.node(node, 15) as usize;
             if leaf_count > 0 {
                 if let Some(stats) = stats.as_deref_mut() {
                     stats.leaves += 1;
@@ -223,21 +223,28 @@ impl Tree {
                 if let Some(stats) = stats.as_deref_mut() {
                     stats.merged += 1;
                 }
-                let mass = match mode {
-                    0 => self.node(node, 4),
-                    1 => self.node(node, 5),
+                let (mass, com_slot) = match mode {
+                    0 => (self.node(node, 4), 8),
+                    1 => (self.node(node, 5), 12),
                     _ => {
-                        self.constant_density as f64
-                            * cell[0]
-                            * cell[1]
-                            * cell[2]
-                            * self.node(node, 13)
+                        (
+                            self.constant_density as f64
+                                * cell[0]
+                                * cell[1]
+                                * cell[2]
+                                * self.node(node, 19),
+                            16,
+                        )
                     }
                 };
                 Self::add_point(
                     &mut out,
                     observer,
-                    [self.node(node, 8), self.node(node, 9), self.node(node, 10)],
+                    [
+                        self.node(node, com_slot),
+                        self.node(node, com_slot + 1),
+                        self.node(node, com_slot + 2),
+                    ],
                     mass,
                 );
             } else {

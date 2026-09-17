@@ -213,9 +213,9 @@ fn main() -> ExitCode {
         selftest(&args)
     } else {
         match args.solver {
-            Solver::Ray => run_raylike(&args, false),
+            Solver::Ray => run_rtfp(&args),
             Solver::Carlson => run_carlson(&args),
-            Solver::CarlsonAlpha => run_raylike(&args, true),
+            Solver::CarlsonAlpha => run_carlson_alpha(&args),
         }
     };
     match result {

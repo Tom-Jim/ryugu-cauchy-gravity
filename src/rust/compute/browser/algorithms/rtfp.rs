@@ -25,14 +25,33 @@ async fn run_rtfp(
             )
             .await;
     }
-    self.run_ray_pipeline(
+    self.run_rtfp_ray_pipeline(
         &pipeline_url(ASSET_RTFP, &base_url),
         start,
         end,
         height_mm,
         signal,
+    )
+    .await
+}
+
+async fn run_rtfp_ray_pipeline(
+    &mut self,
+    asset_url: &str,
+    start: usize,
+    end: usize,
+    height_mm: f64,
+    signal: &JsValue,
+) -> Result<Option<Vec<f32>>, String> {
+    self.dispatch_ray_pipeline(
+        asset_url,
+        start,
+        end,
+        height_mm,
+        signal,
         "rtfp_near",
-        false,
+        "remainder",
+        "RT-FP",
     )
     .await
 }

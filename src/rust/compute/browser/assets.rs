@@ -97,15 +97,22 @@ struct MasconTree {
 }
 
 fn parse_mascon_tree(bytes: &[u8]) -> Result<MasconTree, String> {
-    if bytes.len() < 64 || u32_at(bytes, 0) != 0x314d_5452 || u32_at(bytes, 4) != 1 {
+    if bytes.len() < 64 || u32_at(bytes, 0) != 0x314d_5452 || u32_at(bytes, 4) != 2 {
         return Err("invalid Mascon tree asset".into());
     }
     let grid = u32_at(bytes, 8);
     let point_count = u32_at(bytes, 12) as usize;
     let node_count = u32_at(bytes, 56) as usize;
     let node_offset = 64usize;
-    let order_offset = node_offset + node_count * 64;
-    if bytes.len() < order_offset + point_count * 4 {
+    let order_offset = node_count
+        .checked_mul(80)
+        .and_then(|node_bytes| node_offset.checked_add(node_bytes))
+        .ok_or("Mascon tree size overflow")?;
+    let order_end = point_count
+        .checked_mul(4)
+        .and_then(|order_bytes| order_offset.checked_add(order_bytes))
+        .ok_or("Mascon point-order size overflow")?;
+    if bytes.len() < order_end {
         return Err("truncated Mascon tree asset".into());
     }
     Ok(MasconTree {
@@ -123,11 +130,10 @@ fn parse_mascon_tree(bytes: &[u8]) -> Result<MasconTree, String> {
         ],
         node_count,
         nodes: node_offset..order_offset,
-        order: order_offset..order_offset + point_count * 4,
+        order: order_offset..order_end,
     })
 }
 
 // ---------------------------------------------------------------------------
 // GPU resources
 // ---------------------------------------------------------------------------
-

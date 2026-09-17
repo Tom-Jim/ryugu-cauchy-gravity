@@ -35,6 +35,7 @@ struct InsideAccelerator<'a> {
     indices: Vec<u32>,
     seen: Vec<i32>,
     stamp: i32,
+    hits: Vec<f64>,
     triangles: &'a [Triangle],
 }
 
@@ -124,6 +125,7 @@ impl<'a> InsideAccelerator<'a> {
             indices,
             seen: vec![0i32; triangles.len()],
             stamp: 0,
+            hits: Vec::with_capacity(16),
             triangles,
         }
     }
@@ -148,7 +150,7 @@ impl<'a> InsideAccelerator<'a> {
             self.seen.fill(0);
             self.stamp = 1;
         }
-        let mut hits = 0usize;
+        self.hits.clear();
         for i in first_i..ACCEL_AXES {
             let cell = (k * ACCEL_AXES + j) * ACCEL_AXES + i;
             for slot in self.offsets[cell]..self.offsets[cell + 1] {
@@ -157,12 +159,18 @@ impl<'a> InsideAccelerator<'a> {
                     continue;
                 }
                 self.seen[triangle] = self.stamp;
-                if ray_triangle_t(point, direction, &self.triangles[triangle]) > 0.0 {
-                    hits += 1;
+                let hit = ray_triangle_t(point, direction, &self.triangles[triangle]);
+                if hit > 0.0 {
+                    self.hits.push(hit);
                 }
             }
         }
-        !hits.is_multiple_of(2)
+        self.hits
+            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        self.hits.dedup_by(|a, b| {
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (*a - *b).abs() <= (8e-7 * scale).max(1e-5)
+        });
+        !self.hits.len().is_multiple_of(2)
     }
 }
-

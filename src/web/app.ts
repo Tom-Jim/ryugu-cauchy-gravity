@@ -26,6 +26,11 @@ import { computed, createApp, reactive } from "vue";
 let session: SessionController | null = null;
 let mounted = false;
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.stack || error.message;
+  return String(error);
+}
+
 export const viewerUi = reactive({
   message: { visible: false, text: "" },
   compute: { visible: false, text: "计算中 · 0.0%" },
@@ -87,8 +92,9 @@ export function configureSession(controller: SessionController) {
 
 export function mountViewer() {
   if (mounted) return;
-  mounted = true;
-  createApp({
+  const root = document.querySelector<HTMLElement>("#app");
+  if (!root) throw new Error("Viewer root #app is missing");
+  const app = createApp({
     setup() {
       return {
         ui: viewerUi,
@@ -108,5 +114,26 @@ export function mountViewer() {
         deleteItem: (item: Record<string, any>) => session?.on_delete_item(String(item?.id ?? "")),
       };
     },
-  }).mount("#app");
+  });
+  app.config.errorHandler = (error) => showFatalError(error);
+  app.mount(root);
+  root.dataset.mounted = "true";
+  mounted = true;
+}
+
+export function showFatalError(error: unknown) {
+  const text = errorText(error);
+  viewerUi.compute.visible = false;
+  viewerUi.buttons.bake.disabled = true;
+  viewerUi.buttons.bake.text = "Unavailable";
+  viewerUi.message.visible = true;
+  viewerUi.message.text = text;
+
+  // This remains visible even when Vue itself failed before it could remove
+  // v-cloak or render the reactive error state.
+  const fallback = document.querySelector<HTMLElement>("#boot-error");
+  if (fallback) {
+    fallback.textContent = text;
+    fallback.hidden = false;
+  }
 }

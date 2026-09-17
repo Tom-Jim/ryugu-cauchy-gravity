@@ -17,22 +17,16 @@ fn print_mass_report(density: &Density, mode: DensityMode) {
         m.volume
     );
     match mode {
-        DensityMode::Cauchy | DensityMode::Elliptic => {
+        DensityMode::Cauchy => {
             let target = if m.target_mass > 0.0 {
                 format!("{:.6e} kg", m.target_mass)
             } else {
                 "absent from TOML".to_string()
             };
-            if mode == DensityMode::Cauchy {
-                println!(
-                    "  raw TOML weights: ∫ρ dV = {:.6e} kg  →  ρ(0)=1190 convention ×{:.9e} = {:.6e} kg",
-                    m.raw_mass, m.rho0_scale, m.rho0_mass
-                );
-            } else {
-                println!(
-                    "  elliptic fractional-alpha field: weights kept raw, scale is shared with Mascon"
-                );
-            }
+            println!(
+                "  raw TOML weights: ∫ρ dV = {:.6e} kg  →  ρ(0)=1190 convention ×{:.9e} = {:.6e} kg",
+                m.raw_mass, m.rho0_scale, m.rho0_mass
+            );
             println!(
                 "  normalization={:?}: ×{:.9e} = {:.6e} kg (target {target})",
                 m.normalization, m.applied_scale, m.applied_mass
@@ -45,6 +39,10 @@ fn print_mass_report(density: &Density, mode: DensityMode) {
                 );
             }
         }
+        DensityMode::Elliptic => println!(
+            "  general-alpha field: original exponents preserved, normalization={:?}, weight scale ×{:.9e}",
+            m.normalization, m.applied_scale
+        ),
         DensityMode::Constant => println!(
             "  constant {:.1} kg/m³ × V = {:.6e} kg (the Werner bake's density, unchanged)",
             density.bulk_density, m.applied_mass
@@ -101,4 +99,3 @@ fn rel6(a: &Sym6, b: &Sym6) -> f64 {
     ]);
     d / frobenius(b).max(1e-300)
 }
-

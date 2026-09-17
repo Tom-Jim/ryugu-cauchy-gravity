@@ -10,7 +10,14 @@ struct Kernel {
 struct DensityFile {
     #[serde(default = "one")]
     alpha_default: f64,
+    #[serde(default)]
+    total_mass_target: f64,
     kernels: Vec<KernelEntry>,
+}
+
+struct ParsedDensity {
+    kernels: Vec<Kernel>,
+    total_mass_target: f64,
 }
 
 #[derive(Deserialize)]
@@ -26,9 +33,9 @@ fn one() -> f64 {
     1.0
 }
 
-fn parse_kernels_text(text: &str, label: &str) -> Result<Vec<Kernel>, String> {
+fn parse_density_text(text: &str, label: &str) -> Result<ParsedDensity, String> {
     let file: DensityFile = toml::from_str(text).map_err(|error| format!("{label}: {error}"))?;
-    Ok(file
+    let kernels = file
         .kernels
         .iter()
         .map(|entry| Kernel {
@@ -41,7 +48,11 @@ fn parse_kernels_text(text: &str, label: &str) -> Result<Vec<Kernel>, String> {
             w: entry.w,
             alpha: entry.alpha.unwrap_or(file.alpha_default),
         })
-        .collect())
+        .collect();
+    Ok(ParsedDensity {
+        kernels,
+        total_mass_target: file.total_mass_target.max(0.0),
+    })
 }
 
 fn density_at(kernels: &[Kernel], point: Vec3) -> f64 {
@@ -133,20 +144,35 @@ fn volume_centroid(triangles: &[Triangle]) -> Vec3 {
         for (bary, weight) in DUNANT7 {
             let y = triangle_point(triangle, bary);
             let r2 = dot(y, y);
-            accumulated[0] += 0.5 * weight * r2 * raw_normal[0];
-            accumulated[1] += 0.5 * weight * r2 * raw_normal[1];
-            accumulated[2] += 0.5 * weight * r2 * raw_normal[2];
+            // c_i = V^-1 ∮ (|y|² / 2) n_i dS. `raw_normal` has
+            // magnitude 2·area, so the triangle factor is 1/4, not 1/2.
+            accumulated[0] += 0.25 * weight * r2 * raw_normal[0];
+            accumulated[1] += 0.25 * weight * r2 * raw_normal[1];
+            accumulated[2] += 0.25 * weight * r2 * raw_normal[2];
         }
     }
     let volume = body_volume(triangles);
-    if volume > 1e-30 {
+    if volume.abs() > 1e-30 {
         scale(accumulated, 1.0 / volume)
     } else {
         [0.0, 0.0, 0.0]
     }
 }
 
-fn normalize_kernels(triangles: &[Triangle], kernels: &[Kernel], target_mass: f64) -> Vec<Kernel> {
+fn normalize_kernels(
+    triangles: &[Triangle],
+    kernels: &[Kernel],
+    target_mass: f64,
+) -> Result<Vec<Kernel>, String> {
+    if kernels
+        .iter()
+        .any(|kernel| (kernel.alpha - 1.0).abs() > 1e-9)
+    {
+        return Err(
+            "Cauchy total-mass normalization requires alpha=1 kernels; use CarlsonAlpha or Mascon for general alpha"
+                .into(),
+        );
+    }
     let raw_mass: f64 = kernels
         .iter()
         .map(|kernel| kernel.w * kernel_volume(triangles, kernel.c, kernel.sigma))
@@ -156,11 +182,11 @@ fn normalize_kernels(triangles: &[Triangle], kernels: &[Kernel], target_mass: f6
     } else {
         1.0
     };
-    kernels
+    Ok(kernels
         .iter()
         .map(|kernel| Kernel {
             w: kernel.w * scale_factor,
             ..*kernel
         })
-        .collect()
+        .collect())
 }

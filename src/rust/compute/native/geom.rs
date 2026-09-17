@@ -23,8 +23,8 @@ impl<'a> BruteTracer<'a> {
     }
 
     /// Crossing distances in `(t_min, t_max)`, ascending, capped at [`MAX_HITS`].
-    /// No de-duplication: a ray through a shared edge or vertex really does meet
-    /// two triangles there, and `rays.wgsl` records both.
+    /// Shared-edge/vertex hits are de-duplicated because they are one boundary
+    /// crossing even though two or more triangles report it.
     pub fn crossings(&self, o: [f64; 3], d: [f64; 3], t_min: f64, t_max: f64, out: &mut Vec<f64>) {
         out.clear();
         for f in 0..self.mesh.face_count() {
@@ -40,6 +40,7 @@ impl<'a> BruteTracer<'a> {
             }
         }
         out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        dedup_crossings(out);
         out.truncate(MAX_HITS);
     }
 }
@@ -94,7 +95,15 @@ pub fn bvh_crossings(
         }
     }
     out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dedup_crossings(out);
     out.truncate(MAX_HITS);
+}
+
+fn dedup_crossings(hits: &mut Vec<f64>) {
+    hits.dedup_by(|a, b| {
+        let scale = a.abs().max(b.abs()).max(1.0);
+        (*a - *b).abs() <= (8e-7 * scale).max(1e-5)
+    });
 }
 
 /// Möller–Trumbore in f64, no backface culling.

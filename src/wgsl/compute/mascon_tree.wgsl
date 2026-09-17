@@ -13,11 +13,12 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<storage, read> globals: Globals;
-// Four vec4 rows per node:
+// Five vec4 rows per node:
 //   centre.xyz + half extent
 //   mass Cauchy + mass elliptic + left + right
-//   centre of mass.xyz + leaf start
-//   leaf count + total occupied-point count
+//   Cauchy centre of mass.xyz + leaf start
+//   elliptic centre of mass.xyz + leaf count
+//   constant-density centre of mass.xyz + occupied-point count
 @group(0) @binding(1) var<storage, read> nodes: array<vec4<f32>>;
 // Original point records: x | y<<16, z | pad<<16, mass Cauchy bits, mass elliptic bits.
 @group(0) @binding(2) var<storage, read> point_records: array<u32>;
@@ -27,10 +28,6 @@ struct Globals {
 @group(0) @binding(5) var<storage, read_write> face_scalars: array<f32>;
 
 const STACK: u32 = 128u;
-
-fn node_f32(index: u32, slot: u32) -> f32 {
-  return nodes[index * 4u + slot].x;
-}
 
 fn point_position(index: u32) -> vec3<f32> {
   let word = point_records[index * 4u];
@@ -69,9 +66,9 @@ fn add_point_mass(out: ptr<function, array<f32, 6>>, observer: vec3<f32>, source
 }
 
 fn add_leaf(out: ptr<function, array<f32, 6>>, node: u32, observer: vec3<f32>) {
-  let base = node * 4u;
+  let base = node * 5u;
   let first = u32(nodes[base + 2u].w + 0.5);
-  let count = u32(nodes[base + 3u].x + 0.5);
+  let count = u32(nodes[base + 3u].w + 0.5);
   for (var i = 0u; i < count; i = i + 1u) {
     let point = point_order[first + i];
     add_point_mass(out, observer, point_position(point), point_mass(point));
@@ -79,7 +76,7 @@ fn add_leaf(out: ptr<function, array<f32, 6>>, node: u32, observer: vec3<f32>) {
 }
 
 fn add_node_monopole(out: ptr<function, array<f32, 6>>, node: u32, observer: vec3<f32>) {
-  let base = node * 4u;
+  let base = node * 5u;
   let mode = u32(globals.bounds_min.w + 0.5);
   var mass = select(
     nodes[base + 1u].y,
@@ -88,9 +85,14 @@ fn add_node_monopole(out: ptr<function, array<f32, 6>>, node: u32, observer: vec
   );
   if (mode == 2u) {
     mass = globals.cell.w * globals.cell.x * globals.cell.y * globals.cell.z
-      * nodes[base + 3u].y;
+      * nodes[base + 4u].w;
   }
-  add_point_mass(out, observer, nodes[base + 2u].xyz, mass);
+  let center = select(
+    select(nodes[base + 4u].xyz, nodes[base + 3u].xyz, mode == 1u),
+    nodes[base + 2u].xyz,
+    mode == 0u,
+  );
+  add_point_mass(out, observer, center, mass);
 }
 
 @compute @workgroup_size(64)
@@ -112,7 +114,7 @@ fn mascon_tree(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     top = top - 1u;
     let node = stack[top];
-    let base = node * 4u;
+    let base = node * 5u;
     // Node records are SI: `nodes[base].xyz` is the box centre in metres and
     // `nodes[base].w` its largest half edge in metres. The same convention is
     // used by the native mirror (`src/rust/compute/native/mascon.rs`).
@@ -123,7 +125,7 @@ fn mascon_tree(@builtin(global_invocation_id) gid: vec3<u32>) {
     // casting -1.0 straight to an integer would fold it onto child 0.
     let left_f = nodes[base + 1u].z;
     let right_f = nodes[base + 1u].w;
-    let leaf_count = u32(nodes[base + 3u].x + 0.5);
+    let leaf_count = u32(nodes[base + 3u].w + 0.5);
     if (leaf_count > 0u) {
       add_leaf(&tensor, node, observer);
     } else if (half / distance < theta) {
