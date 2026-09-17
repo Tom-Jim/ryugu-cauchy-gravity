@@ -71,13 +71,13 @@
 # -------------
 # The weights below are rescaled at load time so that the integral of rho over
 # the body equals `total_mass_target` (the Ryugu mass scale), using the
-# divergence-theorem volume integral in `bakes/rtfp/src/mass.rs`. Every record on
+# divergence-theorem volume integral in `src/rust/compute/native/mass.rs`.
 # disk - Werner, mascon, RT-FP and Carlson - is on that same mass budget, so a
 # residual face-by-face gap is algorithm or discretisation, never bookkeeping.
 # The alternative convention (rho(0) = bulk_density_ref) is computed and printed
 # by every bake so that the two can never be silently confused.
 # =============================================================================
-type = "cauchy_kernels"
+type = "arbitrary_density_cauchy_mixture"
 alpha_default = 1.0
 model_id = "ryugu_angular_ore_belt_with_core_step_v5"
 total_mass_target = 4.50e11

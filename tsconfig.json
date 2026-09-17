@@ -19,5 +19,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/server/**/*.ts", "scripts/**/*.mjs", "scripts/**/*.ts", "tools/**/*.ts"]
+  "include": ["src/web/**/*.ts", "src/web/**/*.mjs"]
 }

@@ -2,24 +2,86 @@
 name = "ryugu_cauchy_gravity"
 version = "0.1.0"
 edition = "2024"
-description = "Bevy + WebGPU viewer for per-face gravity-gradient records of asteroid (162173) Ryugu"
+description = "Rust, WebGPU and WGSL gravity-gradient solvers for asteroid Ryugu"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Tom-Jim/ryugu-cauchy-gravity"
 homepage = "https://github.com/Tom-Jim/ryugu-cauchy-gravity"
 keywords = ["gravity-gradient", "polyhedral", "asteroid", "ryugu", "webgpu"]
 categories = ["science", "graphics", "wasm"]
+build = "src/rust/build.rs"
 
 [lib]
-path = "src/viewer/lib.rs"
+path = "src/rust/viewer/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "rtfp-bake"
+path = "src/rust/bin/rtfp_bake.rs"
+
+[features]
+default = []
+# Links the optional ESA C++ reference library for `rtfp-bake --selftest`.
+esa = []
+
 [dependencies]
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "webgpu"] }
 bevy_panorbit_camera = "0.35"
-wasm-bindgen = "0.2"
-getrandom = { version = "0.4", features = ["wasm_js"] }
 console_error_panic_hook = "0.1"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wgpu = { version = "29", default-features = false }
+web-sys = { version = "0.3", features = [
+    "AbortController",
+    "AbortSignal",
+    "BroadcastChannel",
+    "Crypto",
+    "Document",
+    "DomException",
+    "DomStringList",
+    "Element",
+    "EventTarget",
+    "History",
+    "HtmlBodyElement",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbObjectStore",
+    "IdbObjectStoreParameters",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbVersionChangeEvent",
+    "Location",
+    "MediaQueryList",
+    "Navigator",
+    "Node",
+    "Request",
+    "RequestCache",
+    "RequestInit",
+    "Response",
+    "Screen",
+    "Storage",
+    "SubtleCrypto",
+    "Url",
+    "UrlSearchParams",
+    "Window",
+    "console",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ellip = "1.1.1"
+wgpu = "30"
+
+[build-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
 
 [profile.dev]
 opt-level = 1

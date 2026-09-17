@@ -15,24 +15,27 @@
   "type": "module",
   "scripts": {
     "dev": "bun run build:dev && bun run serve",
-    "serve": "bun src/server/server.ts",
-    "build": "bun scripts/build.mjs --dev",
-    "build:release": "bun scripts/build.mjs --release",
-    "build:dev": "bun scripts/build.mjs --dev",
-    "pages:build": "bun run build && bun run pages:stage",
-    "pages:stage": "bun scripts/stage-pages.mjs",
+    "serve": "bun src/web/server/server.ts",
+    "build": "bun src/web/tools/build.mjs --dev",
+    "build:release": "bun src/web/tools/build.mjs --release",
+    "build:dev": "bun src/web/tools/build.mjs --dev",
+    "pages:build": "bun run build:release && bun run pages:stage",
+    "pages:stage": "bun src/web/tools/stage-pages.mjs",
     "typecheck": "tsc --noEmit",
-    "fmt": "cargo fmt --all && cargo fmt --all --manifest-path bakes/rtfp/Cargo.toml",
-    "fmt:check": "cargo fmt --all --check && cargo fmt --all --check --manifest-path bakes/rtfp/Cargo.toml",
-    "lint": "RUSTC_WRAPPER= CARGO_TARGET_DIR=./target cargo clippy --release --all-targets --manifest-path bakes/rtfp/Cargo.toml -- -D warnings",
-    "test": "RUSTC_WRAPPER= CARGO_TARGET_DIR=./target cargo test --release --manifest-path bakes/rtfp/Cargo.toml",
-    "esa:configure": "cmake -S vendor/polyhedral-gravity-model -B bakes/esa-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYHEDRAL_GRAVITY_PARALLELIZATION=CPP -DBUILD_POLYHEDRAL_GRAVITY_PYTHON_INTERFACE=OFF -DBUILD_POLYHEDRAL_GRAVITY_TESTS=OFF -DBUILD_POLYHEDRAL_GRAVITY_EXECUTABLE=OFF -DPOLYHEDRAL_GRAVITY_LIBRARY=ON -DPOLYHEDRAL_GRAVITY_LOGGING_LEVEL=WARN && cmake --build bakes/esa-build -j",
-    "bakes:build": "cmake -S bakes -B bakes/build -DCMAKE_BUILD_TYPE=Release && cmake --build bakes/build -j",
-    "rtfp:build": "RUSTC_WRAPPER= CARGO_TARGET_DIR=./target cargo build --release --manifest-path bakes/rtfp/Cargo.toml",
-    "rtfp:selftest": "RUSTC_WRAPPER= CARGO_TARGET_DIR=./target cargo build --release --features esa --manifest-path bakes/rtfp/Cargo.toml && ./target/release/rtfp-bake --selftest --mode cauchy --normalize total_mass"
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --all --check",
+    "lint": "cargo clippy --all-targets -- -D warnings",
+    "test": "cargo test",
+    "native:configure": "cmake -S src/c++ -B build/c++ -DCMAKE_BUILD_TYPE=Release",
+    "native:build": "cmake --build build/c++ -j",
+    "rtfp:build": "cargo build --release --bin rtfp-bake",
+    "rtfp:selftest": "cargo run --release --features esa --bin rtfp-bake -- --selftest --mode cauchy --normalize total_mass"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "vue": "^3.5.42"
   }
 }

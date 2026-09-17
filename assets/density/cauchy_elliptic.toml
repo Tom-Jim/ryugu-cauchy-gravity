@@ -3,15 +3,15 @@
 #
 # rho(y) = sum_k w_k * [1 + sigma_k^2 ||y - c_k||^2]^(-alpha_k)
 #
-# This model deliberately uses alpha != 1. The legacy RT-FP radial remainder
-# and the Carlson jump-surface representation only admit alpha = 1, so they
-# reject this file. Mascon samples the field directly and CarlsonAlpha
-# integrates the general radial finite part on the GPU.
+# This model deliberately uses alpha != 1. At load time every non-unit exponent
+# is adaptively decomposed into a finite alpha=1 Cauchy mixture. RT-FP, Carlson,
+# CarlsonAlpha and Mascon therefore consume the same arbitrary-density source
+# field and can be compared at the same height.
 #
 # The weights are used as written (`--normalize raw`). Mascon does the same
 # when total_mass_target is zero, so the two records share one density scale.
 # =============================================================================
-type = "cauchy_kernels"
+type = "arbitrary_density_cauchy_mixture"
 alpha_default = 1.25
 model_id = "ryugu_fractional_cauchy_elliptic_v1"
 total_mass_target = 0.0

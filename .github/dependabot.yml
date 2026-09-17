@@ -3,21 +3,12 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /bakes/rtfp
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
-    groups:
-      rust-bake:
-        patterns: ["*"]
-
-  - package-ecosystem: cargo
     directory: /
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
     groups:
-      rust-viewer:
+      rust:
         patterns: ["*"]
 
   - package-ecosystem: npm

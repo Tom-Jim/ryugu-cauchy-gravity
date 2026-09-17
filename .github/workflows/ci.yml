@@ -23,12 +23,9 @@ jobs:
   # The numerical core. This is the job that matters: it owns every closed-form
   # identity and every cross-solver check that can run without a GPU.
   # ---------------------------------------------------------------------------
-  bake-core:
-    name: Rust · bake host
+  rust:
+    name: Rust · native core
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bakes/rtfp
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +34,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: bakes/rtfp
 
       - name: Formatting
         run: cargo fmt --check
@@ -46,9 +41,8 @@ jobs:
       - name: Lints
         run: cargo clippy --all-targets -- -D warnings
 
-      # The vendored ESA reference library is a separate cargo feature and is not
-      # linked here: the solvers themselves do not need it. Tests that require the
-      # external 200k-face OBJ skip themselves and report the skip.
+      # The optional ESA reference library is a separate Cargo feature and is not
+      # linked here: the five solvers and the tracked GLB do not require it.
       - name: Tests
         run: cargo test --release
 
@@ -99,9 +93,9 @@ jobs:
 
       - name: Server answers
         run: |
-          bun src/server/server.ts &
+          bun src/web/server/server.ts &
           for _ in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:3000/api/werner/status > /dev/null; then
+            if curl -fsS http://127.0.0.1:3000/ > /dev/null; then
               echo "server is up"
               exit 0
             fi
@@ -117,7 +111,7 @@ jobs:
   bundle:
     name: Static site bundle
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    needs: [bake-core, viewer, web]
+    needs: [rust, viewer, web]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -138,7 +132,10 @@ jobs:
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          tool: wasm-pack,binaryen
+
+      - name: Install
+        run: bun install --frozen-lockfile
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
