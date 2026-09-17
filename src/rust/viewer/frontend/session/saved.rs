@@ -76,7 +76,8 @@ fn current_saved_id(items: &[SavedRow], state: &Core) -> Option<String> {
 fn update_saved_flags(state: &Core) {
     let ui = state.ui.clone();
     let current = field(&ui.saved, "current");
-    let done = get_bool(&current, "done");
+    let done = get_bool(&current, "done")
+        && state.latest_results.contains_key(&state.active_key());
     let mm = get_f64(&current, "standoffMm");
     let busy = get_bool(&ui.saved, "busy");
     set_bool(&ui.saved, "canSave", done && mm > 0.0 && !busy);
@@ -87,6 +88,51 @@ fn update_saved_flags(state: &Core) {
     );
 }
 
+async fn download_current(core: &Rc<RefCell<Core>>) {
+    let (record, ui) = {
+        let state = core.borrow();
+        (state.latest_results.get(&state.active_key()).cloned(), state.ui.clone())
+    };
+    let Some(record) = record else {
+        set_str(&ui.saved, "message", "Download failed: no complete result is available.");
+        return;
+    };
+    let mut engine = core.borrow_mut().engine.take();
+    let Some(engine_ref) = engine.as_mut() else {
+        set_str(&ui.saved, "message", "Download failed: compute engine is unavailable.");
+        return;
+    };
+    let result = engine_ref
+        .export_vtk(js_sys::Uint8Array::from(record.bytes.as_slice()))
+        .await;
+    core.borrow_mut().engine = engine;
+    match result {
+        Ok(value) => {
+            let bytes = value.dyn_into::<js_sys::Uint8Array>().unwrap_or_default();
+            let array = js_sys::Array::new();
+            array.push(&bytes);
+            let blob = web_sys::Blob::new_with_u8_array_sequence(&array)
+                .map_err(|_| ())
+                .ok();
+            let Some(blob) = blob else {
+                set_str(&ui.saved, "message", "Download failed: could not create VTK data.");
+                return;
+            };
+            let Some(window) = web_sys::window() else { return; };
+            let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return; };
+            let Some(document) = window.document() else { return; };
+            let Ok(element) = document.create_element("a") else { return; };
+            let anchor = element.dyn_into::<web_sys::HtmlAnchorElement>().unwrap();
+            anchor.set_href(&url);
+            anchor.set_download("ryugu-gravity-gradient.vtp");
+            anchor.click();
+            let _ = web_sys::Url::revoke_object_url(&url);
+            set_str(&ui.saved, "message", "VTK PolyData download started.");
+        }
+        Err(error) => set_str(&ui.saved, "message", &format!("Download failed: {error:?}")),
+    }
+}
+
 async fn save_current(core: &Rc<RefCell<Core>>) {
     let (can_save, record) = {
         let mut state = core.borrow_mut();
@@ -94,7 +140,9 @@ async fn save_current(core: &Rc<RefCell<Core>>) {
         state.saved_current_id = current_id;
         let key = state.active_key();
         let record = state.latest_results.get(&key).cloned();
-        let done = get_bool(&field(&state.ui.saved, "current"), "done");
+        let done = record
+            .as_ref()
+            .is_some_and(|result| same_standoff(result.standoff_mm, state.standoff_mm));
         let busy = get_bool(&state.ui.saved, "busy");
         (done && state.standoff_mm > 0.0 && !busy, record)
     };
@@ -174,4 +222,3 @@ async fn delete_item(core: &Rc<RefCell<Core>>, id: Option<&str>) {
     }
     set_bool(&ui.saved, "busy", false);
 }
-

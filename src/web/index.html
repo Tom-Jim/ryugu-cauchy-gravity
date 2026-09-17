@@ -191,18 +191,20 @@
     </div>
     <aside id="saved-panel">
       <div class="saved-head">
-        <strong>已保存数据</strong>
+        <strong>Saved results</strong>
         <div class="saved-actions">
           <button class="saved-action primary" type="button"
-                  :disabled="!saved.canSave" @click="saveCurrent">保存当前</button>
+                  :disabled="!saved.canSave" @click="saveCurrent">Save current</button>
+          <button class="saved-action" type="button"
+                  :disabled="!saved.canSave || saved.busy" @click="downloadCurrent">Download VTK</button>
           <button class="saved-action danger" type="button"
-                  :disabled="!saved.hasCurrentSaved || saved.busy" @click="deleteCurrent">删除当前</button>
+                  :disabled="!saved.hasCurrentSaved || saved.busy" @click="deleteCurrent">Delete current</button>
         </div>
       </div>
       <div class="saved-message">{{ saved.message }}</div>
       <div class="saved-list">
-        <div v-if="saved.loading" class="saved-empty">读取中…</div>
-        <div v-else-if="groups.length === 0" class="saved-empty">还没有保存的数据。</div>
+        <div v-if="saved.loading" class="saved-empty">Loading…</div>
+        <div v-else-if="groups.length === 0" class="saved-empty">No saved results.</div>
         <section v-for="group in groups" :key="group.algorithm" class="saved-group">
           <h2>{{ group.algorithm }}</h2>
           <div v-for="item in group.items" :key="item.id" class="saved-row">
@@ -212,7 +214,7 @@
             </div>
             <span>{{ item.facesText }} faces</span>
             <button class="saved-row-delete" type="button"
-                    :disabled="saved.busy" @click="deleteItem(item)">删除</button>
+                    :disabled="saved.busy" @click="deleteItem(item)">Delete</button>
           </div>
         </section>
       </div>

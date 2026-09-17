@@ -92,4 +92,16 @@ impl RuntimeSource {
         let (tree, _, _) = build_mascon_tree(&source);
         Ok((points, tree))
     }
+
+    pub fn vtk_polydata(&self, scalars: &[f32]) -> Vec<u8> {
+        let mut out = String::from("# vtk DataFile Version 3.0\nRyugu gravity gradient\nASCII\nDATASET POLYDATA\n");
+        let points = self.triangles.iter().flat_map(|t| [t.a, t.b, t.c]).collect::<Vec<_>>();
+        out.push_str(&format!("POINTS {} float\n", points.len()));
+        for p in points { out.push_str(&format!("{:.9} {:.9} {:.9}\n", p[0], p[1], p[2])); }
+        out.push_str(&format!("POLYGONS {} {}\n", self.triangles.len(), self.triangles.len() * 4));
+        for (i, _) in self.triangles.iter().enumerate() { let b = i * 3; out.push_str(&format!("3 {} {} {}\n", b, b + 1, b + 2)); }
+        out.push_str(&format!("CELL_DATA {}\nSCALARS gravity_gradient float 1\nLOOKUP_TABLE default\n", self.triangles.len()));
+        for i in 0..self.triangles.len() { out.push_str(&format!("{}\n", scalars.get(i).copied().unwrap_or(f32::NAN))); }
+        out.into_bytes()
+    }
 }

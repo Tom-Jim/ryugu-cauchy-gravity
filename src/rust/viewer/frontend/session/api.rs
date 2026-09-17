@@ -159,6 +159,11 @@ impl Session {
         });
     }
 
+    pub fn on_download_current(&self) {
+        let core = self.core.clone();
+        spawn_local(async move { download_current(&core).await; });
+    }
+
     pub fn on_delete_current(&self) {
         let core = self.core.clone();
         let id = core.borrow().saved_current_id.clone();

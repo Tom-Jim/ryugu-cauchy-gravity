@@ -7,6 +7,7 @@ type SessionController = {
   on_standoff_commit(): void;
   on_mobile_dismiss(): void;
   on_save_current(): void;
+  on_download_current(): void;
   on_delete_current(): void;
   on_delete_item(id: string): void;
 };
@@ -110,6 +111,7 @@ export function mountViewer() {
         onStandoffCommit: () => session?.on_standoff_commit(),
         onMobileDismiss: () => session?.on_mobile_dismiss(),
         saveCurrent: () => session?.on_save_current(),
+        downloadCurrent: () => session?.on_download_current(),
         deleteCurrent: () => session?.on_delete_current(),
         deleteItem: (item: Record<string, any>) => session?.on_delete_item(String(item?.id ?? "")),
       };

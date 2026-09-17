@@ -10,6 +10,17 @@ pub struct ComputeEngine {
 
 #[wasm_bindgen]
 impl ComputeEngine {
+    pub async fn export_vtk(&mut self, record: js_sys::Uint8Array) -> Result<js_sys::Uint8Array, JsValue> {
+        let source = self.gpu.as_mut().ok_or_else(|| JsValue::from_str("WebGPU computation backend is unavailable"))?.runtime_source().await.map_err(|e| JsValue::from_str(&e))?;
+        let bytes = record.to_vec();
+        if bytes.len() < RECORD_HEADER || u32_at(&bytes, 0) != RECORD_MAGIC || u32_at(&bytes, 4) != RECORD_VERSION {
+            return Err(JsValue::from_str("invalid RHGF record"));
+        }
+        let count = u32_at(&bytes, 8) as usize;
+        if bytes.len() < RECORD_HEADER + count * 4 { return Err(JsValue::from_str("truncated RHGF record")); }
+        let scalars = (0..count).map(|i| f32_at(&bytes, RECORD_HEADER + i * 4)).collect::<Vec<_>>();
+        Ok(js_sys::Uint8Array::from(source.vtk_polydata(&scalars).as_slice()))
+    }
     /// `new ComputeEngine({ baseUrl })` resolved against the document base URI.
     #[wasm_bindgen(constructor)]
     pub fn new(base_url: Option<String>) -> ComputeEngine {
