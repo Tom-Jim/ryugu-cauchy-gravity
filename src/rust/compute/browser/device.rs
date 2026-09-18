@@ -115,7 +115,7 @@ async fn new(base_url: String) -> Result<Self, String> {
     }
 
     async fn density_text(&mut self, path: &str) -> Result<Rc<String>, String> {
-        if self.density_files.get(path).is_none() {
+        if !self.density_files.contains_key(path) {
             let url = pipeline_url(path, &self.base_url);
             let bytes = fetch_bytes(&url).await.map_err(js_error)?;
             let text = String::from_utf8(bytes)
@@ -126,7 +126,7 @@ async fn new(base_url: String) -> Result<Self, String> {
     }
 
     async fn asset(&mut self, url: &str) -> Result<Rc<Vec<u8>>, String> {
-        if self.assets.get(url).is_none() {
+        if !self.assets.contains_key(url) {
             let source = self.runtime_source().await?;
             if matches!(url, ASSET_MASCON | ASSET_MASCON_TREE) {
                 let cauchy = self.density_text(CAUCHY_PATH).await?;
