@@ -142,5 +142,6 @@ fn publish_saved_selection(core: &Rc<RefCell<Core>>, done: bool) {
     set_str(&current, "density", &density);
     set_f64(&current, "standoffMm", mm);
     set_bool(&current, "done", done);
+    let state = core.borrow();
+    update_saved_flags(&state);
 }
-

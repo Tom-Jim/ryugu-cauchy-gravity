@@ -92,7 +92,7 @@ async fn run_job(
         0.0
     };
     set_bar_percent(core, start_percent);
-    show_compute_indicator(core, start_percent, &format!("全表面 {}", fmt_mm(job.mm)));
+    show_compute_indicator(core, start_percent, &format!("Full surface {}", fmt_mm(job.mm)));
     core.borrow().ui.status(&if start_face > 0 {
         format!("Resuming {label} · {start_percent:.1}%")
     } else {
@@ -128,7 +128,7 @@ async fn run_job(
         show_compute_indicator(
             &progress_core,
             compute_percent,
-            &format!("全表面 {}", fmt_mm(progress_mm)),
+            &format!("Full surface {}", fmt_mm(progress_mm)),
         );
         progress_core
             .borrow()
@@ -196,7 +196,7 @@ async fn run_job(
     };
     if !record_has_signal(&parsed) {
         return Err(
-            "计算没有产生任何非零结果：GPU 管线未执行，请检查 WebGPU 设备限制与管线校验错误。"
+            "The computation produced no non-zero values; the GPU pipeline did not run. Check WebGPU limits and pipeline validation."
                 .to_string(),
         );
     }

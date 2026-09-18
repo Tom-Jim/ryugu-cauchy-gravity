@@ -21,14 +21,14 @@ async fn render_completed_result(
         return false;
     };
     let label = if message.is_empty() {
-        format!("最新临时结果 · {}", fmt_mm(standoff))
+        format!("Latest temporary result · {}", fmt_mm(standoff))
     } else {
         message.to_string()
     };
-    show_compute_indicator(core, 99.0, &format!("渲染 {}", fmt_mm(standoff)));
+    show_compute_indicator(core, 99.0, &format!("Rendering {}", fmt_mm(standoff)));
     core.borrow()
         .ui
-        .status(&format!("{label} · 渲染中 · 99.0%"));
+        .status(&format!("{label} · rendering · 99.0%"));
     {
         let state = core.borrow();
         if let Some(result) = state.latest_results.get(key) {

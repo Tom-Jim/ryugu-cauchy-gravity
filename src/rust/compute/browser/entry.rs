@@ -18,6 +18,9 @@ impl ComputeEngine {
         }
         let count = u32_at(&bytes, 8) as usize;
         if bytes.len() < RECORD_HEADER + count * 4 { return Err(JsValue::from_str("truncated RHGF record")); }
+        if count != source.face_count() {
+            return Err(JsValue::from_str("RHGF face count does not match the loaded model"));
+        }
         let scalars = (0..count).map(|i| f32_at(&bytes, RECORD_HEADER + i * 4)).collect::<Vec<_>>();
         Ok(js_sys::Uint8Array::from(source.vtk_polydata(&scalars).as_slice()))
     }

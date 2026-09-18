@@ -42,6 +42,10 @@ impl RuntimeSource {
         write_werner(&self.triangles)
     }
 
+    pub fn face_count(&self) -> usize {
+        self.triangles.len()
+    }
+
     pub fn rtfp(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
         let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
         let kernels = normalize_kernels(
@@ -94,14 +98,35 @@ impl RuntimeSource {
     }
 
     pub fn vtk_polydata(&self, scalars: &[f32]) -> Vec<u8> {
-        let mut out = String::from("# vtk DataFile Version 3.0\nRyugu gravity gradient\nASCII\nDATASET POLYDATA\n");
         let points = self.triangles.iter().flat_map(|t| [t.a, t.b, t.c]).collect::<Vec<_>>();
-        out.push_str(&format!("POINTS {} float\n", points.len()));
-        for p in points { out.push_str(&format!("{:.9} {:.9} {:.9}\n", p[0], p[1], p[2])); }
-        out.push_str(&format!("POLYGONS {} {}\n", self.triangles.len(), self.triangles.len() * 4));
-        for (i, _) in self.triangles.iter().enumerate() { let b = i * 3; out.push_str(&format!("3 {} {} {}\n", b, b + 1, b + 2)); }
-        out.push_str(&format!("CELL_DATA {}\nSCALARS gravity_gradient float 1\nLOOKUP_TABLE default\n", self.triangles.len()));
-        for i in 0..self.triangles.len() { out.push_str(&format!("{}\n", scalars.get(i).copied().unwrap_or(f32::NAN))); }
+        let triangle_count = self.triangles.len();
+        let mut out = String::from(
+            "<?xml version=\"1.0\"?>\n\
+<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n\
+  <PolyData>\n",
+        );
+        out.push_str(&format!(
+            "    <Piece NumberOfPoints=\"{}\" NumberOfVerts=\"0\" NumberOfLines=\"0\" NumberOfStrips=\"0\" NumberOfPolys=\"{}\">\n",
+            points.len(), triangle_count
+        ));
+        out.push_str("      <Points>\n        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n");
+        for point in points {
+            out.push_str(&format!("          {:.9} {:.9} {:.9}\n", point[0], point[1], point[2]));
+        }
+        out.push_str("        </DataArray>\n      </Points>\n      <Polys>\n        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n");
+        for index in 0..triangle_count {
+            let base = index * 3;
+            out.push_str(&format!("          {} {} {}\n", base, base + 1, base + 2));
+        }
+        out.push_str("        </DataArray>\n        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">\n");
+        for index in 1..=triangle_count {
+            out.push_str(&format!("          {}\n", index * 3));
+        }
+        out.push_str("        </DataArray>\n      </Polys>\n      <CellData Scalars=\"gravity_gradient\">\n        <DataArray type=\"Float32\" Name=\"gravity_gradient\" format=\"ascii\">\n");
+        for index in 0..triangle_count {
+            out.push_str(&format!("          {:.9}\n", scalars.get(index).copied().unwrap_or(0.0)));
+        }
+        out.push_str("        </DataArray>\n      </CellData>\n    </Piece>\n  </PolyData>\n</VTKFile>\n");
         out.into_bytes()
     }
 }

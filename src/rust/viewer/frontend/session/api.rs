@@ -122,7 +122,7 @@ impl Session {
                 render_completed_result(&core, &key, true, generation, &message).await;
             } else {
                 let ui = core.borrow().ui.clone();
-                ui.status("当前算法还没有可重渲染的临时结果。");
+                ui.status("The current algorithm has no temporary result to render.");
             }
             let ui = core.borrow().ui.clone();
             set_bool(&ui.reload, "disabled", false);

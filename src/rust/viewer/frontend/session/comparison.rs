@@ -33,10 +33,10 @@ async fn compare_against(
     mine: &ParsedRecord,
     mine_standoff_mm: f64,
 ) -> String {
-    let label = format!("对比 {} ({})", reference.name, reference.kind);
+    let label = format!("Compare with {} ({})", reference.name, reference.kind);
     let Some(parsed) = reference_result_for(core, reference, mine_standoff_mm).await else {
         return format!(
-            "{label}: 尚未计算。请先切换到 {} · {}，在 {} 计算一次或保存该高度的结果。",
+            "{label}: not computed yet. Switch to {} · {} and compute or save a result at {}.",
             reference.name,
             reference.kind,
             fmt_mm(mine_standoff_mm),
@@ -46,7 +46,7 @@ async fn compare_against(
         // Face-by-face differences only mean something on one observation
         // surface, so the hint names the height the reference must be at.
         return format!(
-            "{label}: 高度不一致。目标高度 {}（{} · {} 当前为 {}），请把 {} 也拉到 {} 重新计算后再对比。",
+            "{label}: observation heights differ. Target is {} ({} · {} is currently {}); recompute {} at {} before comparing.",
             fmt_mm(mine_standoff_mm),
             reference.name,
             reference.kind,
@@ -56,16 +56,16 @@ async fn compare_against(
         );
     }
     let Some(diff) = scalar_diff_stats(mine, &parsed, 0.05) else {
-        return format!("{label}: 可比较的有限面不足。");
+        return format!("{label}: too few finite faces are available for comparison.");
     };
     let pct = |value: f64| format!("{:.2}%", 100.0 * value);
     let partial = if diff.compared < diff.total {
-        format!(" · 仅 {}/{} 面", diff.compared, diff.total)
+        format!(" · {}/{} faces", diff.compared, diff.total)
     } else {
         String::new()
     };
     format!(
-        "{label}: 中位差 {} · 最大 {} · 超过 {} 的面 {}/{}{partial}",
+        "{label}: median difference {} · maximum {} · faces over {}: {}/{}{partial}",
         pct(diff.med),
         pct(diff.max),
         pct(diff.rel_eps),
@@ -77,7 +77,7 @@ async fn compare_against(
 /// The panel text used whenever no comparison is possible yet.
 fn compare_height_notice(standoff_mm: f64) -> String {
     format!(
-        "对比只在同一高度发生：目标高度 {}。 计算完成后会用各算法在该高度的最新临时结果比较；参考算法必须在同一高度完成计算。",
+        "Comparisons require one observation height: {}. The latest temporary result at that height is used; each reference algorithm must also finish at the same height.",
         fmt_mm(standoff_mm)
     )
 }
@@ -102,7 +102,7 @@ async fn update_algorithm_compare(core: &Rc<RefCell<Core>>, status: &Status) {
             &ui.compare,
             "text",
             &format!(
-                "{name} 是基准算法。切换到 RT-FP / Carlson / CarlsonAlpha，可查看它们与本基准在同一高度上的面间对比。"
+                "{name} is a reference algorithm. Switch to RT-FP, Carlson, or CarlsonAlpha to compare face values at the same height."
             ),
         );
         return;

@@ -93,15 +93,15 @@ fn show_compute_indicator(core: &Rc<RefCell<Core>>, percent: f64, label: &str) {
         0.0
     };
     let text = if label.is_empty() {
-        format!("计算中 · {bounded:.1}%")
+        format!("Computing · {bounded:.1}%")
     } else {
-        format!("计算中 · {label} · {bounded:.1}%")
+        format!("Computing · {label} · {bounded:.1}%")
     };
     core.borrow().ui.compute_indicator(true, &text);
 }
 
 fn hide_compute_indicator(core: &Rc<RefCell<Core>>) {
-    core.borrow().ui.compute_indicator(false, "计算中 · 0.0%");
+    core.borrow().ui.compute_indicator(false, "Computing · 0.0%");
 }
 
 /// A zero-length record restores the model's own material instead of painting it.

@@ -34,7 +34,7 @@ function errorText(error: unknown): string {
 
 export const viewerUi = reactive({
   message: { visible: false, text: "" },
-  compute: { visible: false, text: "计算中 · 0.0%" },
+  compute: { visible: false, text: "Computing · 0.0%" },
   mobile: { visible: false },
   algo: {
     label: "Werner · uniform density",

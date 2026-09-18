@@ -54,7 +54,7 @@ async fn refresh_saved(core: &Rc<RefCell<Core>>) {
         }
         Err(error) => {
             let ui = core.borrow().ui.clone();
-            set_str(&ui.saved, "message", &format!("读取保存列表失败：{error}"));
+            set_str(&ui.saved, "message", &format!("Failed to read saved results: {error}"));
         }
     }
     let ui = core.borrow().ui.clone();
@@ -151,14 +151,15 @@ async fn save_current(core: &Rc<RefCell<Core>>) {
     }
     let ui = core.borrow().ui.clone();
     set_bool(&ui.saved, "busy", true);
-    set_str(&ui.saved, "message", "正在保存当前结果…");
+    set_str(&ui.saved, "message", "Saving the current result…");
     let Some(record) = record else {
         set_str(
             &ui.saved,
             "message",
-            "保存失败：Error: 当前结果不在内存中，无法保存",
+            "Save failed: the current result is no longer in memory.",
         );
         set_bool(&ui.saved, "busy", false);
+        update_saved_flags(&core.borrow());
         return;
     };
     let row = SavedRow {
@@ -175,12 +176,13 @@ async fn save_current(core: &Rc<RefCell<Core>>) {
     let store = core.borrow().store.clone();
     match store.put_saved(&row).await {
         Ok(()) => {
-            set_str(&ui.saved, "message", &format!("已保存 {described}"));
+            set_str(&ui.saved, "message", &format!("Saved {described}"));
             refresh_saved(core).await;
         }
-        Err(error) => set_str(&ui.saved, "message", &format!("保存失败：{error}")),
+        Err(error) => set_str(&ui.saved, "message", &format!("Save failed: {error}")),
     }
     set_bool(&ui.saved, "busy", false);
+    update_saved_flags(&core.borrow());
     // The panel keeps saved records as candidate comparison sources, so re-run
     // the last status through it.
     let last = core.borrow().last_status.clone();
@@ -198,7 +200,7 @@ async fn delete_item(core: &Rc<RefCell<Core>>, id: Option<&str>) {
         return;
     }
     set_bool(&ui.saved, "busy", true);
-    set_str(&ui.saved, "message", "正在删除…");
+    set_str(&ui.saved, "message", "Deleting…");
     let item = core
         .borrow()
         .saved_items
@@ -211,14 +213,15 @@ async fn delete_item(core: &Rc<RefCell<Core>>, id: Option<&str>) {
             let described = item
                 .map(|item| format!("{} · {}", item.algorithm, fmt_mm(item.standoff_mm)))
                 .unwrap_or_else(|| id.clone());
-            set_str(&ui.saved, "message", &format!("已删除 {described}"));
+            set_str(&ui.saved, "message", &format!("Deleted {described}"));
             refresh_saved(core).await;
             let last = core.borrow().last_status.clone();
             if let Some(status) = last {
                 update_algorithm_compare(core, &status).await;
             }
         }
-        Err(error) => set_str(&ui.saved, "message", &format!("删除失败：{error}")),
+        Err(error) => set_str(&ui.saved, "message", &format!("Delete failed: {error}")),
     }
     set_bool(&ui.saved, "busy", false);
+    update_saved_flags(&core.borrow());
 }
