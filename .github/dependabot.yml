@@ -2,22 +2,22 @@
 # manifests current rather than discovering drift a year from now.
 version: 2
 updates:
-  - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
-    groups:
-      rust:
-        patterns: ["*"]
+    - package-ecosystem: cargo
+      directory: /
+      schedule:
+          interval: monthly
+      open-pull-requests-limit: 5
+      groups:
+          rust:
+              patterns: ["*"]
 
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
+    - package-ecosystem: npm
+      directory: /
+      schedule:
+          interval: monthly
+      open-pull-requests-limit: 5
 
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: monthly

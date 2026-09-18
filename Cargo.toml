@@ -28,6 +28,7 @@ esa = []
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+ellip = "1.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "webgpu"] }
@@ -80,7 +81,6 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ellip = "1.1.1"
 wgpu = "30"
 
 [build-dependencies]

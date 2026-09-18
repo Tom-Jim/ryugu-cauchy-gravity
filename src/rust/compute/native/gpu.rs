@@ -74,7 +74,6 @@ impl Device {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
-            apply_limit_buckets: false,
         }))
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();

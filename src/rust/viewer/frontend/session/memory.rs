@@ -77,4 +77,3 @@ fn install_memory_guard(core: Rc<RefCell<Core>>) {
         }
     });
 }
-

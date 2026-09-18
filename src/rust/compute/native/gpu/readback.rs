@@ -1,5 +1,5 @@
 impl Scene {
-fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
+    fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
         let bytes = count * 4;
         if bytes > self.readback_len {
             return Err("readback buffer too small".into());
@@ -24,11 +24,7 @@ fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
                 Err(e) => return Err(format!("readback channel: {e}")),
             }
         }
-        let mapped = self
-            .readback
-            .slice(..bytes as u64)
-            .get_mapped_range()
-            .map_err(|e| format!("readback map range: {e}"))?;
+        let mapped = self.readback.slice(..bytes as u64).get_mapped_range();
         let mut out = Vec::with_capacity(count);
         for chunk in mapped.as_chunks::<4>().0 {
             out.push(f32::from_le_bytes(*chunk));
@@ -37,5 +33,4 @@ fn read_f32(&self, count: usize) -> Result<Vec<f32>, String> {
         self.readback.unmap();
         Ok(out)
     }
-
 }

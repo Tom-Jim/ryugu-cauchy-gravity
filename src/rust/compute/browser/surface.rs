@@ -1,5 +1,5 @@
 impl GpuSolver {
-#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn run_surface(
         &mut self,
         shader_name: &str,
@@ -13,13 +13,14 @@ impl GpuSolver {
         height_mm: f64,
         gravitational_scale: f64,
         signal: &JsValue,
+        output_mode: OutputMode,
     ) -> Result<Option<Vec<f32>>, String> {
         let pipeline = self.pipeline(shader_name, entry_point).await?;
         let face_bytes = self.asset(face_asset).await?;
         let faces = parse_face_asset(&face_bytes, face_magic, None)?;
         let face_records = face_bytes[faces.records.clone()].to_vec();
         let face_buffer_key = format!("{face_asset}:faces");
-        if !self.face_buffers.contains_key(&face_buffer_key) {
+        if self.face_buffers.get(&face_buffer_key).is_none() {
             let buffer = self.storage_buffer("surface faces", &face_records);
             self.face_buffers.insert(face_buffer_key.clone(), buffer);
         }
@@ -29,9 +30,10 @@ impl GpuSolver {
         let geometry = parse_face_asset(&geometry_bytes, geometry_magic, Some(FACE_COUNT))?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_buffer_key = format!("{geometry_asset}:faces");
-        if !self.face_buffers.contains_key(&geometry_buffer_key) {
+        if self.face_buffers.get(&geometry_buffer_key).is_none() {
             let buffer = self.storage_buffer("observation faces", &geometry_records);
-            self.face_buffers.insert(geometry_buffer_key.clone(), buffer);
+            self.face_buffers
+                .insert(geometry_buffer_key.clone(), buffer);
         }
         let geometry_buffer = self.face_buffers[&geometry_buffer_key].clone();
 
@@ -44,7 +46,7 @@ impl GpuSolver {
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("surface tensor output"),
             size: (count * 6 * 4).max(16) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let mut globals = [0u8; 32];
@@ -79,44 +81,62 @@ impl GpuSolver {
             ],
         });
 
-        let scalar_pipeline = self.pipeline("tensor_scalar", "analytic_scalar").await?;
-        let scalar_output = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("analytic face scalars"),
-            size: (count * 4).max(16) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let mut scalar_globals = [0u8; 16];
-        set_u32(&mut scalar_globals, 0, count as u32);
-        let scalar_global_buffer = self.storage_buffer("scalar globals", &scalar_globals);
-        let scalar_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("analytic scalars"),
-            layout: &scalar_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: scalar_global_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: scalar_output.as_entire_binding(),
-                },
-            ],
-        });
+        let scalar_pipeline = if output_mode == OutputMode::Scalar {
+            Some(self.pipeline("tensor_scalar", "analytic_scalar").await?)
+        } else {
+            None
+        };
+        let scalar_output = if output_mode == OutputMode::Scalar {
+            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("analytic face scalars"),
+                size: (count * 4).max(16) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+        let scalar_global_buffer = if output_mode == OutputMode::Scalar {
+            let mut scalar_globals = [0u8; 16];
+            set_u32(&mut scalar_globals, 0, count as u32);
+            Some(self.storage_buffer("scalar globals", &scalar_globals))
+        } else {
+            None
+        };
+        let scalar_bind = if let (Some(pipeline), Some(scalar_output), Some(scalar_global_buffer)) =
+            (&scalar_pipeline, &scalar_output, &scalar_global_buffer)
+        {
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("analytic scalars"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: scalar_global_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: scalar_output.as_entire_binding(),
+                    },
+                ],
+            }))
+        } else {
+            None
+        };
 
         if signal_aborted(signal) {
-            for buffer in [
-                &points,
-                &observer.global_buffer,
-                &output,
-                &global_buffer,
-                &scalar_output,
-                &scalar_global_buffer,
-            ] {
+            points.destroy();
+            observer.global_buffer.destroy();
+            output.destroy();
+            global_buffer.destroy();
+            if let Some(buffer) = scalar_output.as_ref() {
+                buffer.destroy();
+            }
+            if let Some(buffer) = scalar_global_buffer.as_ref() {
                 buffer.destroy();
             }
             return Ok(None);
@@ -136,33 +156,43 @@ impl GpuSolver {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(analytic_groups_x, analytic_groups_y, 1);
         }
-        {
+        if let (Some(scalar_pipeline), Some(scalar_bind)) = (&scalar_pipeline, &scalar_bind) {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("analytic scalars"),
+                label: Some("analytic scalar reduction"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&scalar_pipeline);
-            pass.set_bind_group(0, &scalar_bind, &[]);
+            pass.set_pipeline(scalar_pipeline);
+            pass.set_bind_group(0, scalar_bind, &[]);
             pass.dispatch_workgroups(count.div_ceil(64) as u32, 1, 1);
         }
         self.queue.submit(Some(encoder.finish()));
         if let Some(error) = error_scope.pop().await {
-            return Err(format!("WebGPU {shader_name} pass failed validation: {error}"));
+            return Err(format!(
+                "WebGPU {shader_name} pass failed validation: {error}"
+            ));
         }
-        let raw = self
-            .read_buffer(&scalar_output, (count * 4) as u64, None)
-            .await;
-        for buffer in [
-            &points,
-            &observer.global_buffer,
-            &output,
-            &global_buffer,
-            &scalar_output,
-            &scalar_global_buffer,
-        ] {
+        let raw = if output_mode == OutputMode::Scalar {
+            self.read_buffer(scalar_output.as_ref().unwrap(), (count * 4) as u64, None)
+                .await
+        } else {
+            self.read_buffer(&output, (count * 6 * 4) as u64, None)
+                .await
+        };
+        points.destroy();
+        observer.global_buffer.destroy();
+        output.destroy();
+        global_buffer.destroy();
+        if let Some(buffer) = scalar_output.as_ref() {
             buffer.destroy();
         }
+        if let Some(buffer) = scalar_global_buffer.as_ref() {
+            buffer.destroy();
+        }
+        let count = if output_mode == OutputMode::Tensor {
+            count * 6
+        } else {
+            count
+        };
         Ok(Some(bytes_to_f32(&raw?, count)))
     }
-
 }

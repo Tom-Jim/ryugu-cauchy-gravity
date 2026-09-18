@@ -16,10 +16,11 @@ struct Ui {
     reload: JsValue,
     compare: JsValue,
     saved: JsValue,
+    diagnostics: JsValue,
 }
 
 impl Ui {
-    fn new(viewer_ui: &JsValue, saved: &JsValue) -> Ui {
+    fn new(viewer_ui: &JsValue, saved: &JsValue, diagnostics: &JsValue) -> Ui {
         let buttons = field(viewer_ui, "buttons");
         Ui {
             root: viewer_ui.clone(),
@@ -33,6 +34,7 @@ impl Ui {
             reload: field(&buttons, "reload"),
             compare: field(viewer_ui, "compare"),
             saved: saved.clone(),
+            diagnostics: diagnostics.clone(),
         }
     }
 
@@ -104,6 +106,7 @@ struct Core {
     record_generation: u64,
     stats_generation: Option<u64>,
     compute_running: bool,
+    diagnostic_running: bool,
     compute_target: Option<Job>,
     compute_generation: u64,
     compute_abort: Option<web_sys::AbortController>,

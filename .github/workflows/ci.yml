@@ -1,169 +1,169 @@
 name: CI
 
 on:
-  push:
-    branches: [master, main]
-  pull_request:
-  workflow_dispatch:
+    push:
+        branches: [master, main]
+    pull_request:
+    workflow_dispatch:
 
 # A newer push makes the previous run irrelevant.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 permissions:
-  contents: read
+    contents: read
 
 env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
+    CARGO_TERM_COLOR: always
+    CARGO_INCREMENTAL: "0"
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # The numerical core. This is the job that matters: it owns every closed-form
-  # identity and every cross-solver check that can run without a GPU.
-  # ---------------------------------------------------------------------------
-  rust:
-    name: Rust · native core
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    # ---------------------------------------------------------------------------
+    # The numerical core. This is the job that matters: it owns every closed-form
+    # identity and every cross-solver check that can run without a GPU.
+    # ---------------------------------------------------------------------------
+    rust:
+        name: Rust · native core
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+            - uses: Swatinem/rust-cache@v2
 
-      - name: Formatting
-        run: cargo fmt --check
+            - name: Formatting
+              run: cargo fmt --check
 
-      - name: Lints
-        run: cargo clippy --all-targets -- -D warnings
+            - name: Lints
+              run: cargo clippy --all-targets -- -D warnings
 
-      # The optional ESA reference library is a separate Cargo feature and is not
-      # linked here: the five solvers and the tracked GLB do not require it.
-      - name: Tests
-        run: cargo test --release
+            # The optional ESA reference library is a separate Cargo feature and is not
+            # linked here: the five solvers and the tracked GLB do not require it.
+            - name: Tests
+              run: cargo test --release
 
-  # ---------------------------------------------------------------------------
-  # The viewer is a WebAssembly application, so the deployment target is what has
-  # to compile, not the host.
-  # ---------------------------------------------------------------------------
-  viewer:
-    name: Rust · WASM viewer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    # ---------------------------------------------------------------------------
+    # The viewer is a WebAssembly application, so the deployment target is what has
+    # to compile, not the host.
+    # ---------------------------------------------------------------------------
+    viewer:
+        name: Rust · WASM viewer
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: wasm32-unknown-unknown
+                  components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+            - uses: Swatinem/rust-cache@v2
 
-      - name: Formatting
-        run: cargo fmt --check
+            - name: Formatting
+              run: cargo fmt --check
 
-      - name: Lints
-        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+            - name: Lints
+              run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
 
-      - name: Build
-        run: cargo build --release --target wasm32-unknown-unknown
+            - name: Build
+              run: cargo build --release --target wasm32-unknown-unknown
 
-  # ---------------------------------------------------------------------------
-  # Control surface: types, plus a boot smoke test of the development server.
-  # ---------------------------------------------------------------------------
-  web:
-    name: Bun · server
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    # ---------------------------------------------------------------------------
+    # Control surface: types, plus a boot smoke test of the development server.
+    # ---------------------------------------------------------------------------
+    web:
+        name: Bun · server
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.2
 
-      - name: Install
-        run: bun install --frozen-lockfile
+            - name: Install
+              run: bun install --frozen-lockfile
 
-      - name: Typecheck
-        run: bun run typecheck
+            - name: Typecheck
+              run: bun run typecheck
 
-      - name: Server answers
-        run: |
-          bun src/web/server/server.ts &
-          for _ in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:3000/ > /dev/null; then
-              echo "server is up"
-              exit 0
-            fi
-            sleep 0.5
-          done
-          echo "the development server never answered"
-          exit 1
+            - name: Server answers
+              run: |
+                  bun src/web/server/server.ts &
+                  for _ in $(seq 1 40); do
+                    if curl -fsS http://127.0.0.1:3000/ > /dev/null; then
+                      echo "server is up"
+                      exit 0
+                    fi
+                    sleep 0.5
+                  done
+                  echo "the development server never answered"
+                  exit 1
 
-  # ---------------------------------------------------------------------------
-  # Pages: build the WASM package, stage only the browser files into dist/, and
-  # publish that directory with the GitHub Actions Pages deployment flow.
-  # ---------------------------------------------------------------------------
-  bundle:
-    name: Static site bundle
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    needs: [rust, viewer, web]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
+    # ---------------------------------------------------------------------------
+    # Pages: build the WASM package, stage only the browser files into dist/, and
+    # publish that directory with the GitHub Actions Pages deployment flow.
+    # ---------------------------------------------------------------------------
+    bundle:
+        name: Static site bundle
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        needs: [rust, viewer, web]
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            pages: write
+            id-token: write
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+            - uses: Swatinem/rust-cache@v2
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.2
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
+            - uses: taiki-e/install-action@v2
+              with:
+                  tool: wasm-pack
 
-      - name: Install Binaryen
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y binaryen
+            - name: Install Binaryen
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install --no-install-recommends -y binaryen
 
-      - name: Install
-        run: bun install --frozen-lockfile
+            - name: Install
+              run: bun install --frozen-lockfile
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+            - name: Configure Pages
+              uses: actions/configure-pages@v5
 
-      - name: Build the static site
-        run: bun run pages:build
+            - name: Build the static site
+              run: bun run pages:build
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist/
+            - uses: actions/upload-pages-artifact@v3
+              with:
+                  path: dist/
 
-  pages:
-    name: GitHub Pages
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    needs: bundle
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy
-        id: deployment
-        uses: actions/deploy-pages@v4
+    pages:
+        name: GitHub Pages
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        needs: bundle
+        runs-on: ubuntu-latest
+        permissions:
+            pages: write
+            id-token: write
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - name: Deploy
+              id: deployment
+              uses: actions/deploy-pages@v4

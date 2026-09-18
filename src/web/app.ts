@@ -10,7 +10,12 @@ type SessionController = {
   on_download_current(): void;
   on_delete_current(): void;
   on_delete_item(id: string): void;
+  run_diagnostic(kind: string): void;
+  evaluate_diagnostic(options: Record<string, unknown>): Promise<Uint8Array>;
 };
+
+type DiagnosticPoint = { x: number; y: number };
+type DiagnosticSeries = { name: string; color: string; facet: string; dash: string; points: DiagnosticPoint[] };
 
 // View layer only.
 //
@@ -34,12 +39,12 @@ function errorText(error: unknown): string {
 
 export const viewerUi = reactive({
   message: { visible: false, text: "" },
-  compute: { visible: false, text: "Computing · 0.0%" },
+  compute: { visible: false, text: "Computing - 0.0%" },
   mobile: { visible: false },
   algo: {
-    label: "Werner · uniform density",
+    label: "Werner - uniform density",
     button: "Next algorithm",
-    panelTitle: "Werner · uniform density · analytic polyhedral gradient",
+    panelTitle: "Werner - uniform density - analytic polyhedral gradient",
   },
   standoff: {
     value: "16.00 m",
@@ -56,7 +61,7 @@ export const viewerUi = reactive({
     reload: { hidden: true, disabled: false, text: "Reload colours" },
   },
   barPercent: 0,
-  status: "Reading status…",
+  status: "Reading status...",
   compare: { visible: false, text: "" },
 });
 
@@ -76,6 +81,24 @@ export const saved = reactive({
   },
 });
 
+export const diagnostics = reactive({
+  visible: false,
+  kind: "",
+  title: "",
+  xLabel: "",
+  yLabel: "",
+  xScale: "linear" as const,
+  yScale: "linear" as const,
+  busy: false,
+  ready: false,
+  progress: 0,
+  status: "",
+  error: "",
+  summary: "",
+  downloadName: "diagnostic.svg",
+  series: [] as DiagnosticSeries[],
+});
+
 const savedGroups = computed(() => {
   const groups = new Map<string, { algorithm: string; items: Array<Record<string, any>> }>();
   for (const item of saved.items as Array<Record<string, any>>) {
@@ -85,6 +108,63 @@ const savedGroups = computed(() => {
     groups.set(item.algorithm, group);
   }
   return [...groups.values()];
+});
+
+const diagnosticChart = computed(() => {
+  const faceted = diagnostics.kind === "stability";
+  const facetNames = faceted ? ["Uniform", "Cauchy", "Fractional Cauchy"] : ["all"];
+  const panelWidth = faceted ? 370 : 960;
+  const width = panelWidth * facetNames.length;
+  const height = faceted ? 560 : 540;
+  const pad = { left: faceted ? 56 : 76, right: 24, top: 68, bottom: 62 };
+  const formatDecimal = (value: number) => {
+    if (!Number.isFinite(value)) return "";
+    const magnitude = Math.abs(value);
+    if (magnitude >= 1000) return value.toFixed(0);
+    if (magnitude >= 1) return value.toFixed(3);
+    if (magnitude >= 0.01) return value.toFixed(5);
+    if (magnitude === 0) return "0.00000";
+    return value.toFixed(Math.min(12, Math.max(5, Math.ceil(-Math.log10(magnitude)) + 3)));
+  };
+  const expandDomain = (low: number, high: number): [number, number] => {
+    const span = high - low;
+    const margin = span === 0 ? Math.max(Math.abs(low) * 0.1, 1) : Math.max(Math.abs(span) * 0.08, 1e-9);
+    return [low - margin, high + margin];
+  };
+  const panels = facetNames.map((facet, facetIndex) => {
+    const selected = diagnostics.series.filter((series) => facet === "all" || series.facet === facet);
+    const points = selected.flatMap((series) => series.points).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const innerWidth = panelWidth - pad.left - pad.right;
+    const innerHeight = height - pad.top - pad.bottom;
+    if (points.length === 0) {
+      return { facet, offsetX: facetIndex * panelWidth, width: panelWidth, height, inner: { ...pad, innerWidth, innerHeight }, ticksX: [], ticksY: [], paths: [] };
+    }
+    let [minX, maxX] = expandDomain(Math.min(...points.map((point) => point.x)), Math.max(...points.map((point) => point.x)));
+    let [minY, maxY] = expandDomain(Math.min(...points.map((point) => point.y)), Math.max(...points.map((point) => point.y)));
+    const x = (value: number) => facetIndex * panelWidth + pad.left + ((value - minX) / (maxX - minX)) * innerWidth;
+    const y = (value: number) => pad.top + innerHeight - ((value - minY) / (maxY - minY)) * innerHeight;
+    const ticks = (low: number, high: number) => Array.from({ length: 5 }, (_, index) => {
+      const value = low + (high - low) * index / 4;
+      return { value, label: formatDecimal(value) };
+    });
+    return {
+      facet,
+      offsetX: facetIndex * panelWidth,
+      width: panelWidth,
+      height,
+      inner: { ...pad, innerWidth, innerHeight },
+      ticksX: ticks(minX, maxX).map((tick) => ({ ...tick, position: x(tick.value) })),
+      ticksY: ticks(minY, maxY).map((tick) => ({ ...tick, position: y(tick.value) })),
+      paths: selected.map((series) => ({
+        ...series,
+        path: series.points
+          .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+          .map((point, index) => `${index === 0 ? "M" : "L"}${x(point.x).toFixed(2)},${y(point.y).toFixed(2)}`)
+          .join(" "),
+      })),
+    };
+  });
+  return { width, height, panels };
 });
 
 export function configureSession(controller: SessionController) {
@@ -114,6 +194,37 @@ export function mountViewer() {
         downloadCurrent: () => session?.on_download_current(),
         deleteCurrent: () => session?.on_delete_current(),
         deleteItem: (item: Record<string, any>) => session?.on_delete_item(String(item?.id ?? "")),
+        diagnostics,
+        diagnosticChart,
+        openDiagnostic: (kind: string) => {
+          diagnostics.visible = true;
+          diagnostics.kind = kind;
+          diagnostics.busy = true;
+          diagnostics.ready = false;
+          diagnostics.error = "";
+          diagnostics.series = [];
+          diagnostics.status = "Preparing diagnostic...";
+          session?.run_diagnostic(kind);
+        },
+        closeDiagnostic: () => {
+          diagnostics.visible = false;
+        },
+        downloadDiagnostic: () => {
+          if (!diagnostics.ready) return;
+          const svg = document.querySelector<SVGSVGElement>("#diagnostic-chart");
+          if (!svg) return;
+          const copy = svg.cloneNode(true) as SVGSVGElement;
+          const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+          style.textContent = ".diagnostic-grid{stroke:rgba(140,233,255,.13);stroke-width:1}.diagnostic-axis{stroke:rgba(231,247,255,.65);stroke-width:1}.diagnostic-tick{fill:#8da7b8;font:10px monospace}.diagnostic-label,.diagnostic-legend{fill:#e7f7ff;font:11px monospace}.diagnostic-path{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}";
+          copy.prepend(style);
+          const blob = new Blob([new XMLSerializer().serializeToString(copy)], { type: "image/svg+xml" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = diagnostics.downloadName;
+          link.click();
+          URL.revokeObjectURL(url);
+        },
       };
     },
   });

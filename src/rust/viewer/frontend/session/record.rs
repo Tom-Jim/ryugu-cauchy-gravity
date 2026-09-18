@@ -75,4 +75,3 @@ fn record_has_signal(parsed: &ParsedRecord) -> bool {
         .iter()
         .any(|value| value.is_finite() && *value != 0.0)
 }
-

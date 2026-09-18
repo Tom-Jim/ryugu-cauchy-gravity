@@ -178,4 +178,3 @@ fn write_lease(id: &str, identity: &str) {
     let raw: String = value.to_string().into();
     set_storage(TAB_LEASE_KEY, &raw);
 }
-

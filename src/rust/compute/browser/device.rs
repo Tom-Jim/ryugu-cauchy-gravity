@@ -1,5 +1,5 @@
 impl GpuSolver {
-async fn new(base_url: String) -> Result<Self, String> {
+    async fn new(base_url: String) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             flags: wgpu::InstanceFlags::default(),
@@ -63,7 +63,9 @@ async fn new(base_url: String) -> Result<Self, String> {
             "carlson_alpha" => Some(SHADER_CARLSON_ALPHA),
             "observers" => Some(SHADER_OBSERVERS),
             "tensor_scalar" => Some(SHADER_TENSOR_SCALAR),
+            "tensor_compose" => Some(SHADER_TENSOR_COMPOSE),
             "mascon_tree" => Some(SHADER_MASCON_TREE),
+            "mascon_tensor" => Some(SHADER_MASCON_TENSOR),
             _ => None,
         }
     }
@@ -115,7 +117,7 @@ async fn new(base_url: String) -> Result<Self, String> {
     }
 
     async fn density_text(&mut self, path: &str) -> Result<Rc<String>, String> {
-        if !self.density_files.contains_key(path) {
+        if self.density_files.get(path).is_none() {
             let url = pipeline_url(path, &self.base_url);
             let bytes = fetch_bytes(&url).await.map_err(js_error)?;
             let text = String::from_utf8(bytes)
@@ -126,7 +128,7 @@ async fn new(base_url: String) -> Result<Self, String> {
     }
 
     async fn asset(&mut self, url: &str) -> Result<Rc<Vec<u8>>, String> {
-        if !self.assets.contains_key(url) {
+        if self.assets.get(url).is_none() {
             let source = self.runtime_source().await?;
             if matches!(url, ASSET_MASCON | ASSET_MASCON_TREE) {
                 let cauchy = self.density_text(CAUCHY_PATH).await?;
@@ -304,5 +306,4 @@ async fn new(base_url: String) -> Result<Self, String> {
         readback.destroy();
         Ok(data)
     }
-
 }

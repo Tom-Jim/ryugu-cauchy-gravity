@@ -71,6 +71,8 @@ pub fn remainder_scalar_reference(
 /// These are thin wrappers so the numerical backend stays in one place and so
 /// callers cannot accidentally pull in a different special-function convention.
 pub mod special {
+    use ::ellip;
+
     pub fn rf(x: f64, y: f64, z: f64) -> Result<f64, String> {
         ellip::elliprf(x, y, z).map_err(|e| format!("RF({x}, {y}, {z}): {e}"))
     }

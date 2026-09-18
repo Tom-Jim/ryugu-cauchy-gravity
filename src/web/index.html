@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="ryugu-mode" content="static" />
   <link rel="icon" href="data:," />
-  <title>Ryugu · gravity-gradient comparison</title>
+  <title>Ryugu - gravity-gradient comparison</title>
   <style>
     :root {
       --space: #050914;
@@ -74,7 +74,7 @@
       color: #041019; background: var(--cyan); font-weight: 750;
     }
     #panel {
-      position: fixed; left: 1rem; bottom: 1rem; z-index: 3;
+      position: fixed; left: 1rem; bottom: 1rem; z-index: 8;
       width: min(460px, calc(100vw - 2rem));
       background: var(--surface); border: 1px solid var(--line);
       border-radius: 6px; padding: .9rem 1rem; backdrop-filter: blur(8px);
@@ -98,8 +98,71 @@
     }
     #status { font-size: 12px; opacity: .9; line-height: 1.35; }
     #compare { margin-top: .45rem; font-size: 12px; opacity: .92; line-height: 1.4; white-space: pre-line; }
+    #diagnostic-actions {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem;
+      margin-top: .65rem; padding-top: .65rem; border-top: 1px solid rgba(255,255,255,.1);
+    }
+    .diagnostic-btn {
+      min-height: 2.2rem; border: 1px solid var(--line); border-radius: 5px; padding: .35rem .45rem;
+      color: var(--text); background: rgba(140,233,255,.08); cursor: pointer; font-size: 10px;
+      font-weight: 750; line-height: 1.2;
+    }
+    .diagnostic-btn:hover { border-color: var(--line-hot); background: rgba(140,233,255,.16); }
+    .diagnostic-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #diagnostic-modal {
+      position: fixed; inset: 0; z-index: 25; display: grid; place-items: center;
+      padding: 4vh 4vw; background: rgba(2,6,14,.58); backdrop-filter: blur(14px);
+    }
+    #diagnostic-modal[hidden] { display: none; }
+    .diagnostic-window {
+      width: min(1080px, 100%); height: min(760px, 92vh); display: flex; flex-direction: column;
+      overflow: hidden; border: 1px solid var(--line-hot); border-radius: 8px;
+      background: rgba(7,16,29,.84); box-shadow: 0 24px 90px rgba(0,0,0,.5), 0 0 38px rgba(40,193,255,.14);
+      backdrop-filter: blur(18px);
+    }
+    .diagnostic-head {
+      position: relative;
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+      padding: .9rem 1rem .65rem; border-bottom: 1px solid rgba(255,255,255,.1);
+    }
+    .diagnostic-download { position: absolute; left: 1rem; top: .8rem; }
+    .diagnostic-head > div:first-of-type { padding-left: 7.2rem; }
+    .diagnostic-head h2 { margin: 0; color: var(--cyan); font-size: 14px; }
+    .diagnostic-head p { margin: .3rem 0 0; color: var(--muted); font-size: 11px; }
+    .diagnostic-tools { display: flex; gap: .4rem; }
+    .diagnostic-tool {
+      border: 1px solid var(--line); border-radius: 5px; padding: .36rem .55rem; cursor: pointer;
+      color: var(--text); background: rgba(140,233,255,.08); font-size: 11px; font-weight: 750;
+    }
+    .diagnostic-tool:disabled { opacity: .4; cursor: not-allowed; }
+    .diagnostic-body {
+      position: relative; flex: 1 1 auto; min-height: 0; overflow: auto;
+      display: flex; flex-direction: column; padding: .8rem 1rem 1rem;
+    }
+    #diagnostic-chart { width: 100%; min-width: 960px; height: 100%; min-height: 500px; flex: 1 0 auto; display: block; }
+    .diagnostic-grid { stroke: rgba(140,233,255,.13); stroke-width: 1; }
+    .diagnostic-axis { stroke: rgba(231,247,255,.65); stroke-width: 1; }
+    .diagnostic-tick { fill: var(--muted); font-size: 10px; }
+    .diagnostic-label { fill: var(--text); font-size: 11px; }
+    .diagnostic-legend { fill: var(--text); font-size: 11px; }
+    .diagnostic-facet { fill: var(--cyan); font-size: 12px; font-weight: 750; }
+    .diagnostic-path { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+    .diagnostic-state {
+      position: absolute; inset: 1rem; display: grid; place-items: center; pointer-events: none;
+      color: var(--cyan); font-size: 12px; text-align: center; white-space: pre-line;
+    }
+    .diagnostic-summary {
+      flex: 0 0 auto; max-height: 3.2rem; overflow: auto;
+      margin: .4rem 0 0; padding-top: .35rem;
+      color: var(--muted); font-size: 11px; line-height: 1.35;
+    }
+    @media (max-width: 700px) {
+      #diagnostic-actions { grid-template-columns: 1fr; }
+      .diagnostic-window { height: min(680px, 92vh); }
+      .diagnostic-head { flex-direction: column; }
+    }
     #standoff {
-      position: fixed; top: 50%; right: 1rem; transform: translateY(-50%); z-index: 4;
+      position: fixed; top: 50%; right: 1rem; transform: translateY(-50%); z-index: 8;
       display: flex; flex-direction: column; align-items: center; gap: .45rem;
       background: var(--surface); border: 1px solid var(--line);
       border-radius: 6px; padding: .65rem .55rem; backdrop-filter: blur(8px);
@@ -136,9 +199,10 @@
       color: #0b0b10; background: #e8b86d; font-weight: 700; cursor: pointer;
     }
     #saved-panel {
-      position: fixed; left: 1rem; top: 4.1rem; z-index: 4;
-      width: min(430px, calc(100vw - 2rem));
-      max-height: calc(100vh - 24rem); display: flex; flex-direction: column;
+      position: fixed; right: 10rem; top: 4.1rem; z-index: 7;
+      width: min(320px, calc(100vw - 15rem));
+      bottom: 1rem; max-height: none; min-height: 12rem; overflow: hidden;
+      display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--line);
       border-radius: 6px; padding: .85rem; backdrop-filter: blur(8px);
       box-shadow: 0 0 30px rgba(40, 193, 255, .1);
@@ -156,7 +220,10 @@
     .saved-action.danger { color: #ffd9d9; background: rgba(255,100,100,.18); }
     .saved-action:disabled { opacity: .4; cursor: not-allowed; }
     .saved-message { min-height: 1.2em; margin-bottom: .45rem; color: var(--warning); line-height: 1.35; }
-    .saved-list { overflow: auto; padding-right: .15rem; }
+    .saved-list {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+      scrollbar-gutter: stable; padding-right: .45rem;
+    }
     .saved-empty { opacity: .62; line-height: 1.4; }
     .saved-group + .saved-group { margin-top: .7rem; }
     .saved-group h2 { margin: 0 0 .3rem; font-size: 11px; font-weight: 750; color: var(--violet); }
@@ -175,8 +242,8 @@
     @media (max-width: 900px) {
       #algo-bar { left: 1rem; right: auto; top: 4rem; }
       #saved-panel {
-        top: 7rem; width: min(390px, calc(100vw - 2rem));
-        max-height: 25vh;
+        left: 1rem; right: 1rem; top: 7rem; bottom: 15rem;
+        width: auto; max-height: none; min-height: 9rem;
       }
       #standoff {
         top: auto; bottom: 13rem; transform: none;
@@ -213,26 +280,26 @@
     </div>
     <aside id="saved-panel">
       <div class="saved-head">
-        <strong>Temporary results</strong>
+        <strong>Temporary results - {{ saved.items.length }}/50</strong>
         <div class="saved-actions">
           <button class="saved-action primary" type="button"
                   :disabled="!saved.canSave || saved.busy" @click="saveCurrent">Save current</button>
           <button class="saved-action" type="button"
-                  :disabled="!saved.canSave || saved.busy" @click="downloadCurrent">Download VTK</button>
+                  :disabled="!saved.current.done || saved.busy" @click="downloadCurrent">Download VTK</button>
           <button class="saved-action danger" type="button"
                   :disabled="!saved.hasCurrentSaved || saved.busy" @click="deleteCurrent">Delete current</button>
         </div>
       </div>
       <div class="saved-message">{{ saved.message }}</div>
       <div class="saved-list">
-        <div v-if="saved.loading" class="saved-empty">Loading…</div>
+        <div v-if="saved.loading" class="saved-empty">Loading...</div>
         <div v-else-if="groups.length === 0" class="saved-empty">No temporary results.</div>
         <section v-for="group in groups" :key="group.algorithm" class="saved-group">
           <h2>{{ group.algorithm }}</h2>
           <div v-for="item in group.items" :key="item.id" class="saved-row">
             <div class="saved-row-main">
               <span class="saved-row-title">{{ item.standoffText }}</span>
-              <span class="saved-row-meta">{{ item.densityText }} · {{ item.savedAtText }}</span>
+              <span class="saved-row-meta">{{ item.densityText }} - {{ item.savedAtText }}</span>
             </div>
             <span>{{ item.facesText }} faces</span>
             <button class="saved-row-delete" type="button"
@@ -268,7 +335,65 @@
       <div id="bar"><i id="bar-fill" :style="{ transform: `scaleX(${ui.barPercent / 100})` }"></i></div>
       <div id="status">{{ ui.status }}</div>
       <div id="compare" v-show="ui.compare.visible">{{ ui.compare.text }}</div>
+      <div id="diagnostic-actions" aria-label="Diagnostics">
+        <button class="diagnostic-btn" type="button" :disabled="diagnostics.busy"
+                @click="openDiagnostic('pareto')">Pareto frontier</button>
+        <button class="diagnostic-btn" type="button" :disabled="diagnostics.busy"
+                @click="openDiagnostic('stability')">Near-surface stability</button>
+        <button class="diagnostic-btn" type="button" :disabled="diagnostics.busy"
+                @click="openDiagnostic('symmetry')">Tensor symmetry</button>
+      </div>
     </div>
+    <section id="diagnostic-modal" v-show="diagnostics.visible" role="dialog" aria-modal="true"
+             :aria-label="diagnostics.title">
+      <div class="diagnostic-window">
+        <header class="diagnostic-head">
+          <button class="diagnostic-tool diagnostic-download" type="button" :disabled="!diagnostics.ready"
+                  @click="downloadDiagnostic">Download SVG</button>
+          <div>
+            <h2>{{ diagnostics.title }}</h2>
+            <p>{{ diagnostics.xLabel }} - {{ diagnostics.yLabel }}</p>
+          </div>
+          <div class="diagnostic-tools">
+            <button class="diagnostic-tool" type="button" @click="closeDiagnostic">Close</button>
+          </div>
+        </header>
+        <div class="diagnostic-body">
+          <svg id="diagnostic-chart" :viewBox="`0 0 ${diagnosticChart.width} ${diagnosticChart.height}`"
+               role="img" :aria-label="diagnostics.title">
+            <g v-for="panel in diagnosticChart.panels" :key="`panel-${panel.facet}`">
+              <text class="diagnostic-facet" :x="panel.offsetX + panel.width / 2" y="18" text-anchor="middle">{{ panel.facet }}</text>
+              <g v-for="tick in panel.ticksX" :key="`x-${panel.facet}-${tick.position}`">
+                <line class="diagnostic-grid" :x1="tick.position" :x2="tick.position"
+                      :y1="panel.inner.top" :y2="panel.height - panel.inner.bottom" />
+                <text class="diagnostic-tick" :x="tick.position" :y="panel.height - 28" text-anchor="middle">{{ tick.label }}</text>
+              </g>
+              <g v-for="tick in panel.ticksY" :key="`y-${panel.facet}-${tick.position}`">
+                <line class="diagnostic-grid" :x1="panel.offsetX + panel.inner.left" :x2="panel.offsetX + panel.width - panel.inner.right"
+                      :y1="tick.position" :y2="tick.position" />
+                <text class="diagnostic-tick" :x="panel.offsetX + panel.inner.left - 8" :y="tick.position + 3" text-anchor="end">{{ tick.label }}</text>
+              </g>
+              <line class="diagnostic-axis" :x1="panel.offsetX + panel.inner.left" :x2="panel.offsetX + panel.width - panel.inner.right"
+                    :y1="panel.height - panel.inner.bottom" :y2="panel.height - panel.inner.bottom" />
+              <line class="diagnostic-axis" :x1="panel.offsetX + panel.inner.left" :x2="panel.offsetX + panel.inner.left"
+                    :y1="panel.inner.top" :y2="panel.height - panel.inner.bottom" />
+              <path v-for="line in panel.paths" :key="`${panel.facet}-${line.name}`" class="diagnostic-path"
+                    :d="line.path" :stroke="line.color" :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : 'none'" />
+              <g v-for="(line, index) in panel.paths" :key="`legend-${panel.facet}-${line.name}`" :transform="`translate(${panel.offsetX + panel.inner.left + (index % 2) * (panel.width / 2 - 10)}, ${panel.inner.top - 42 + Math.floor(index / 2) * 18})`">
+                <line :x1="0" :x2="20" y1="0" y2="0" :stroke="line.color" class="diagnostic-path"
+                      :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : 'none'" />
+                <text class="diagnostic-legend" x="26" y="4">{{ line.name }}</text>
+              </g>
+              <text class="diagnostic-label" :x="panel.offsetX + panel.width / 2" :y="panel.height - 6" text-anchor="middle">{{ diagnostics.xLabel }}</text>
+              <text class="diagnostic-label" :transform="`rotate(-90 ${panel.offsetX + 14} ${panel.height / 2})`" :x="panel.offsetX + 14" :y="panel.height / 2" text-anchor="middle">{{ diagnostics.yLabel }}</text>
+            </g>
+          </svg>
+          <div class="diagnostic-state" v-if="diagnostics.busy">{{ diagnostics.status }}<br />{{ diagnostics.progress.toFixed(0) }}%</div>
+          <div class="diagnostic-state" v-else-if="diagnostics.error">{{ diagnostics.error }}</div>
+          <p class="diagnostic-summary" v-else>{{ diagnostics.summary }}</p>
+        </div>
+      </div>
+    </section>
   </div>
   <script type="module">
     // Bootstrap only. The session controller, the RHGF v5 record reader, the
@@ -278,11 +403,11 @@
     // this file; it loads the WASM module and hands the controller the two Vue
     // stores it presents through.
     import init, { Session } from "./pkg/ryugu_cauchy_gravity.js";
-    import { configureSession, mountViewer, saved, showFatalError, viewerUi } from "./pkg/app.js";
+    import { configureSession, diagnostics, mountViewer, saved, showFatalError, viewerUi } from "./pkg/app.js";
 
     try {
       await init({ module_or_path: "./pkg/ryugu_cauchy_gravity_bg.wasm" });
-      const session = new Session(viewerUi, saved, "./");
+      const session = new Session(viewerUi, saved, diagnostics, "./");
       configureSession(session);
       mountViewer();
       await session.boot();

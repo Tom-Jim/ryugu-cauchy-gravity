@@ -2,6 +2,8 @@
 // Saved results
 // ---------------------------------------------------------------------------
 
+const MAX_SAVED_RESULTS: usize = 50;
+
 fn format_saved_at(value: f64) -> String {
     if !value.is_finite() {
         return String::new();
@@ -54,7 +56,11 @@ async fn refresh_saved(core: &Rc<RefCell<Core>>) {
         }
         Err(error) => {
             let ui = core.borrow().ui.clone();
-            set_str(&ui.saved, "message", &format!("Failed to read saved results: {error}"));
+            set_str(
+                &ui.saved,
+                "message",
+                &format!("Failed to read saved results: {error}"),
+            );
         }
     }
     let ui = core.borrow().ui.clone();
@@ -76,11 +82,15 @@ fn current_saved_id(items: &[SavedRow], state: &Core) -> Option<String> {
 fn update_saved_flags(state: &Core) {
     let ui = state.ui.clone();
     let current = field(&ui.saved, "current");
-    let done = get_bool(&current, "done")
-        && state.latest_results.contains_key(&state.active_key());
+    let done = get_bool(&current, "done") && state.latest_results.contains_key(&state.active_key());
     let mm = get_f64(&current, "standoffMm");
     let busy = get_bool(&ui.saved, "busy");
-    set_bool(&ui.saved, "canSave", done && mm > 0.0 && !busy);
+    let capacity_available = state.saved_items.len() < MAX_SAVED_RESULTS;
+    set_bool(
+        &ui.saved,
+        "canSave",
+        done && mm > 0.0 && !busy && capacity_available,
+    );
     set_bool(
         &ui.saved,
         "hasCurrentSaved",
@@ -91,20 +101,31 @@ fn update_saved_flags(state: &Core) {
 async fn download_current(core: &Rc<RefCell<Core>>) {
     let (record, ui) = {
         let state = core.borrow();
-        (state.latest_results.get(&state.active_key()).cloned(), state.ui.clone())
+        (
+            state.latest_results.get(&state.active_key()).cloned(),
+            state.ui.clone(),
+        )
     };
     if get_bool(&ui.saved, "busy") {
         return;
     }
     set_bool(&ui.saved, "busy", true);
     let Some(record) = record else {
-        set_str(&ui.saved, "message", "Download failed: no complete result is available.");
+        set_str(
+            &ui.saved,
+            "message",
+            "Download failed: no complete result is available.",
+        );
         set_bool(&ui.saved, "busy", false);
         return;
     };
     let mut engine = core.borrow_mut().engine.take();
     let Some(engine_ref) = engine.as_mut() else {
-        set_str(&ui.saved, "message", "Download failed: compute engine is unavailable.");
+        set_str(
+            &ui.saved,
+            "message",
+            "Download failed: compute engine is unavailable.",
+        );
         set_bool(&ui.saved, "busy", false);
         return;
     };
@@ -121,35 +142,59 @@ async fn download_current(core: &Rc<RefCell<Core>>) {
                 .map_err(|_| ())
                 .ok();
             let Some(blob) = blob else {
-                set_str(&ui.saved, "message", "Download failed: could not create VTK data.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: could not create VTK data.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
             let Some(window) = web_sys::window() else {
-                set_str(&ui.saved, "message", "Download failed: browser window is unavailable.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: browser window is unavailable.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
             let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
-                set_str(&ui.saved, "message", "Download failed: could not create a download URL.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: could not create a download URL.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
             let Some(document) = window.document() else {
                 let _ = web_sys::Url::revoke_object_url(&url);
-                set_str(&ui.saved, "message", "Download failed: document is unavailable.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: document is unavailable.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
             let Ok(element) = document.create_element("a") else {
                 let _ = web_sys::Url::revoke_object_url(&url);
-                set_str(&ui.saved, "message", "Download failed: could not create a link.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: could not create a link.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
             let Ok(anchor) = element.dyn_into::<web_sys::HtmlAnchorElement>() else {
                 let _ = web_sys::Url::revoke_object_url(&url);
-                set_str(&ui.saved, "message", "Download failed: invalid download link.");
+                set_str(
+                    &ui.saved,
+                    "message",
+                    "Download failed: invalid download link.",
+                );
                 set_bool(&ui.saved, "busy", false);
                 return;
             };
@@ -168,6 +213,15 @@ async fn download_current(core: &Rc<RefCell<Core>>) {
 async fn save_current(core: &Rc<RefCell<Core>>) {
     let (can_save, record) = {
         let mut state = core.borrow_mut();
+        if state.saved_items.len() >= MAX_SAVED_RESULTS {
+            set_str(
+                &state.ui.saved,
+                "message",
+                "Save limit reached: 50 results.",
+            );
+            set_bool(&state.ui.saved, "canSave", false);
+            return;
+        }
         let current_id = current_saved_id(&state.saved_items, &state);
         state.saved_current_id = current_id;
         let key = state.active_key();

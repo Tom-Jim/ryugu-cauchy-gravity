@@ -45,7 +45,9 @@ const T_MIN: f64 = 1e-4;
 const T_MAX: f64 = 3000.0;
 const SHADER_OBSERVERS: &str = include_str!("../../../wgsl/compute/observers.wgsl");
 const SHADER_TENSOR_SCALAR: &str = include_str!("../../../wgsl/compute/tensor_scalar.wgsl");
+const SHADER_TENSOR_COMPOSE: &str = include_str!("../../../wgsl/compute/tensor_compose.wgsl");
 const SHADER_MASCON_TREE: &str = include_str!("../../../wgsl/compute/mascon_tree.wgsl");
+const SHADER_MASCON_TENSOR: &str = include_str!("../../../wgsl/compute/mascon_tensor.wgsl");
 const SHADER_WERNER: &str = include_str!("../../../wgsl/compute/werner.wgsl");
 const SHADER_RTFP_NEAR: &str = include_str!("../../../wgsl/compute/rtfp_near.wgsl");
 const SHADER_CARLSON_SURFACE: &str = include_str!("../../../wgsl/compute/carlson_surface.wgsl");
@@ -110,6 +112,12 @@ struct GpuSolver {
     face_buffers: HashMap<String, wgpu::Buffer>,
     mesh_buffers: HashMap<String, Rc<MeshBuffers>>,
     mascon_buffers: HashMap<String, Rc<MasconBuffers>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Scalar,
+    Tensor,
 }
 
 include!("device.rs");

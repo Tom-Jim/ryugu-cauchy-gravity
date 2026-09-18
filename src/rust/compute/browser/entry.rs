@@ -10,19 +10,140 @@ pub struct ComputeEngine {
 
 #[wasm_bindgen]
 impl ComputeEngine {
-    pub async fn export_vtk(&mut self, record: js_sys::Uint8Array) -> Result<js_sys::Uint8Array, JsValue> {
-        let source = self.gpu.as_mut().ok_or_else(|| JsValue::from_str("WebGPU computation backend is unavailable"))?.runtime_source().await.map_err(|e| JsValue::from_str(&e))?;
+    /// Diagnostic-only tensor path. It returns six Hessian components per
+    /// observation point and never writes an RHGF record or touches rendering.
+    pub async fn evaluate_diagnostic(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
+        let algorithm = field_string(&options, "algorithm").unwrap_or_default();
+        let face_count = field_f64(&options, "faceCount")
+            .unwrap_or(128.0)
+            .clamp(1.0, FACE_COUNT as f64) as usize;
+        let height_mm = field_f64(&options, "heightMm").unwrap_or(0.0);
+        let source_set = field_string(&options, "sourceSet").unwrap_or_default();
+        let direction_limit =
+            field_f64(&options, "directionLimit").map(|value| value.max(1.0) as usize);
+        let quadrature_limit =
+            field_f64(&options, "quadratureLimit").map(|value| value.clamp(1.0, 16.0) as usize);
+        let signal = field(&options, "signal");
+        let on_progress = field(&options, "onProgress");
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Err(JsValue::from_str(
+                "WebGPU computation backend is unavailable",
+            ));
+        };
+        let mut output = Vec::with_capacity(face_count * 6);
+        let mut start = 0usize;
+        let size = block_size(&algorithm);
+        while start < face_count {
+            if signal_aborted(&signal) {
+                return Ok(JsValue::NULL);
+            }
+            let end = face_count.min(start + size);
+            let values = match algorithm.as_str() {
+                "werner" => gpu.run_werner_tensor(start, end, height_mm, &signal).await,
+                "mascon" => {
+                    gpu.run_mascon(
+                        start,
+                        end,
+                        height_mm,
+                        match source_set.as_str() {
+                            "elliptic" => "elliptic",
+                            "constant" => "constant",
+                            _ => "cauchy",
+                        },
+                        &signal,
+                        OutputMode::Tensor,
+                        field_f64(&options, "masconTheta"),
+                    )
+                    .await
+                }
+                "rtfp" => {
+                    gpu.run_rtfp_tensor(
+                        source_set == "constant",
+                        start,
+                        end,
+                        height_mm,
+                        direction_limit,
+                        &signal,
+                    )
+                    .await
+                }
+                "carlson" => {
+                    gpu.run_carlson_tensor(source_set == "constant", start, end, height_mm, &signal)
+                        .await
+                }
+                "carlsonalpha" => {
+                    gpu.run_carlson_alpha_tensor(
+                        source_set == "constant",
+                        start,
+                        end,
+                        height_mm,
+                        direction_limit,
+                        quadrature_limit,
+                        &signal,
+                    )
+                    .await
+                }
+                other => Err(format!("unknown algorithm {other}")),
+            }
+            .map_err(|error| JsValue::from_str(&error))?;
+            let Some(values) = values else {
+                return Ok(JsValue::NULL);
+            };
+            if values.len() != (end - start) * 6 {
+                return Err(JsValue::from_str(
+                    "diagnostic tensor block has an invalid size",
+                ));
+            }
+            output.extend(values);
+            start = end;
+            if let Some(callback) = on_progress.dyn_ref::<js_sys::Function>() {
+                let _ = callback.call1(
+                    &JsValue::NULL,
+                    &JsValue::from_f64(start as f64 / face_count as f64),
+                );
+            }
+            yield_to_browser().await;
+        }
+        let mut bytes = Vec::with_capacity(output.len() * 4);
+        for value in output {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())
+    }
+
+    pub async fn export_vtk(
+        &mut self,
+        record: js_sys::Uint8Array,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let source = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("WebGPU computation backend is unavailable"))?
+            .runtime_source()
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
         let bytes = record.to_vec();
-        if bytes.len() < RECORD_HEADER || u32_at(&bytes, 0) != RECORD_MAGIC || u32_at(&bytes, 4) != RECORD_VERSION {
+        if bytes.len() < RECORD_HEADER
+            || u32_at(&bytes, 0) != RECORD_MAGIC
+            || u32_at(&bytes, 4) != RECORD_VERSION
+        {
             return Err(JsValue::from_str("invalid RHGF record"));
         }
         let count = u32_at(&bytes, 8) as usize;
-        if bytes.len() < RECORD_HEADER + count * 4 { return Err(JsValue::from_str("truncated RHGF record")); }
-        if count != source.face_count() {
-            return Err(JsValue::from_str("RHGF face count does not match the loaded model"));
+        if bytes.len() < RECORD_HEADER + count * 4 {
+            return Err(JsValue::from_str("truncated RHGF record"));
         }
-        let scalars = (0..count).map(|i| f32_at(&bytes, RECORD_HEADER + i * 4)).collect::<Vec<_>>();
-        Ok(js_sys::Uint8Array::from(source.vtk_polydata(&scalars).as_slice()))
+        if count != source.face_count() {
+            return Err(JsValue::from_str(
+                "RHGF face count does not match the loaded model",
+            ));
+        }
+        let scalars = (0..count)
+            .map(|i| f32_at(&bytes, RECORD_HEADER + i * 4))
+            .collect::<Vec<_>>();
+        Ok(js_sys::Uint8Array::from(
+            source.vtk_polydata(&scalars).as_slice(),
+        ))
     }
     /// `new ComputeEngine({ baseUrl })` resolved against the document base URI.
     #[wasm_bindgen(constructor)]
@@ -143,27 +264,38 @@ impl ComputeEngine {
             let block_end = FACE_COUNT.min(block_start + size);
             let constant = source_set == "constant";
             let scalars = match algorithm.as_str() {
-                "werner" => gpu
-                    .run_werner(block_start, block_end, height_mm, &signal)
-                    .await,
-                "mascon" => gpu
-                    .run_mascon(
+                "werner" => {
+                    gpu.run_werner(block_start, block_end, height_mm, &signal)
+                        .await
+                }
+                "mascon" => {
+                    gpu.run_mascon(
                         block_start,
                         block_end,
                         height_mm,
-                        if source_set == "elliptic" { "elliptic" } else { "cauchy" },
+                        match source_set.as_str() {
+                            "elliptic" => "elliptic",
+                            "constant" => "constant",
+                            _ => "cauchy",
+                        },
                         &signal,
+                        OutputMode::Scalar,
+                        None,
                     )
-                    .await,
-                "rtfp" => gpu
-                    .run_rtfp(constant, block_start, block_end, height_mm, &signal)
-                    .await,
-                "carlson" => gpu
-                    .run_carlson(constant, block_start, block_end, height_mm, &signal)
-                    .await,
-                "carlsonalpha" => gpu
-                    .run_carlson_alpha(constant, block_start, block_end, height_mm, &signal)
-                    .await,
+                    .await
+                }
+                "rtfp" => {
+                    gpu.run_rtfp(constant, block_start, block_end, height_mm, &signal)
+                        .await
+                }
+                "carlson" => {
+                    gpu.run_carlson(constant, block_start, block_end, height_mm, &signal)
+                        .await
+                }
+                "carlsonalpha" => {
+                    gpu.run_carlson_alpha(constant, block_start, block_end, height_mm, &signal)
+                        .await
+                }
                 other => Err(format!("unknown algorithm {other}")),
             }
             .map_err(|error| JsValue::from_str(&error))?;

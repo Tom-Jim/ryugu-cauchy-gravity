@@ -58,4 +58,3 @@ fn js_error(error: JsValue) -> String {
         .as_string()
         .unwrap_or_else(|| "browser resource request failed".to_string())
 }
-

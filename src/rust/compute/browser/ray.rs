@@ -1,7 +1,7 @@
 impl GpuSolver {
-async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
+    async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         let key = format!("{asset_url}:mesh");
-        if self.mesh_buffers.contains_key(&key) {
+        if self.mesh_buffers.get(&key).is_some() {
             return Ok(());
         }
         let bytes = self.asset(asset_url).await?;
@@ -34,11 +34,17 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         near_shader: &str,
         remainder_shader: &str,
         solver_label: &str,
+        output_mode: OutputMode,
+        direction_limit: Option<usize>,
+        quadrature_limit: Option<usize>,
     ) -> Result<Option<Vec<f32>>, String> {
         self.mesh_buffers(asset_url).await?;
         let key = format!("{asset_url}:mesh");
         let data = self.mesh_buffers[&key].clone();
-        let dir_count = data.layout.dir_count;
+        let dir_count = data
+            .layout
+            .dir_count
+            .min(direction_limit.unwrap_or(data.layout.dir_count).max(1));
         let face_count = data.layout.face_count;
         let kernel_count = data.layout.kernel_count;
         let count = end - start;
@@ -46,9 +52,7 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         let analytic_pipeline = self.pipeline(near_shader, near_shader).await?;
         let inside_pipeline = self.pipeline("rays", "inside_probe").await?;
         let rays_pipeline = self.pipeline("rays", "rays").await?;
-        let remainder_pipeline = self
-            .pipeline(remainder_shader, remainder_shader)
-            .await?;
+        let remainder_pipeline = self.pipeline(remainder_shader, remainder_shader).await?;
         let scalar_pipeline = self.pipeline("tensor_scalar", "ray_scalar").await?;
         let (analytic_groups_x, analytic_groups_y) = point_grid(count);
         let observer = self
@@ -178,7 +182,7 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         });
         // `inside_probe` is a second entry point of the same module. With a
         // default (auto) layout each entry point gets its *own* layout, holding
-        // only the bindings it actually uses — the probe traces rays and never
+        // only the bindings it actually uses - the probe traces rays and never
         // touches the direction quadrature, the interval counts or the interval
         // slots. Binding the full `rays` group to the probe pass therefore
         // invalidates the whole command buffer, and a discarded submission reads
@@ -224,11 +228,16 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let mut remainder_globals = [0u8; 16];
+        let mut remainder_globals = [0u8; 20];
         set_u32(&mut remainder_globals, 0, count as u32);
         set_u32(&mut remainder_globals, 4, dir_count as u32);
         set_u32(&mut remainder_globals, 8, kernel_count as u32);
         set_f32(&mut remainder_globals, 12, G as f32);
+        set_u32(
+            &mut remainder_globals,
+            16,
+            quadrature_limit.unwrap_or(16).clamp(1, 16) as u32,
+        );
         let remainder_global_buffer = self.storage_buffer("remainder globals", &remainder_globals);
         let remainder_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("remainder"),
@@ -304,6 +313,60 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
                 },
             ],
         });
+        // Tensor composition is diagnostic-only. Do not compile or allocate it
+        // on the normal scalar path; the five production solvers remain on the
+        // same resource footprint as before diagnostics were added.
+        let tensor_pipeline = if output_mode == OutputMode::Tensor {
+            Some(self.pipeline("tensor_compose", "compose").await?)
+        } else {
+            None
+        };
+        let tensor_output = if output_mode == OutputMode::Tensor {
+            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("ray diagnostic tensors"),
+                size: (count * 6 * 4).max(16) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+        let tensor_bind = if let (Some(tensor_pipeline), Some(tensor_output)) =
+            (&tensor_pipeline, &tensor_output)
+        {
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ray diagnostic tensor composition"),
+                layout: &tensor_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: scalar_global_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: w_output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: remainder_output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: points.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: data.kernels.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: tensor_output.as_entire_binding(),
+                    },
+                ],
+            }))
+        } else {
+            None
+        };
 
         if signal_aborted(signal) {
             for buffer in [
@@ -320,6 +383,9 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
                 &scalar_output,
                 &scalar_global_buffer,
             ] {
+                buffer.destroy();
+            }
+            if let Some(buffer) = tensor_output.as_ref() {
                 buffer.destroy();
             }
             return Ok(None);
@@ -357,8 +423,15 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
                     pass.dispatch_workgroups(count.div_ceil(64) as u32, 1, 1);
                 }
                 _ => {
-                    pass.set_pipeline(&scalar_pipeline);
-                    pass.set_bind_group(0, &scalar_bind, &[]);
+                    if let (Some(tensor_pipeline), Some(tensor_bind)) =
+                        (&tensor_pipeline, &tensor_bind)
+                    {
+                        pass.set_pipeline(tensor_pipeline);
+                        pass.set_bind_group(0, tensor_bind, &[]);
+                    } else {
+                        pass.set_pipeline(&scalar_pipeline);
+                        pass.set_bind_group(0, &scalar_bind, &[]);
+                    }
                     pass.dispatch_workgroups(count.div_ceil(64) as u32, 1, 1);
                 }
             }
@@ -374,10 +447,22 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         // whenever crossings or visible intervals exceed the fixed shader
         // capacity. Reading it back turns a silently truncated integral into a
         // visible failure.
+        let output_bytes = if output_mode == OutputMode::Tensor {
+            count * 6 * 4
+        } else {
+            count * 4
+        };
+        let output_buffer = if output_mode == OutputMode::Tensor {
+            tensor_output
+                .as_ref()
+                .ok_or_else(|| "diagnostic tensor output buffer was not created".to_string())?
+        } else {
+            &scalar_output
+        };
         let raw = self
             .read_buffer(
-                &scalar_output,
-                (count * 4) as u64,
+                output_buffer,
+                output_bytes as u64,
                 Some((&inside, (count * 4) as u64, 4)),
             )
             .await;
@@ -397,15 +482,29 @@ async fn mesh_buffers(&mut self, asset_url: &str) -> Result<(), String> {
         ] {
             buffer.destroy();
         }
+        if let Some(buffer) = tensor_output.as_ref() {
+            buffer.destroy();
+        }
         let raw = raw?;
-        let overflow = u32::from_le_bytes(raw[count * 4..count * 4 + 4].try_into().unwrap());
+        let overflow_offset = output_bytes;
+        let overflow = u32::from_le_bytes(
+            raw[overflow_offset..overflow_offset + 4]
+                .try_into()
+                .map_err(|_| "ray overflow readback was truncated".to_string())?,
+        );
         if overflow != 0 {
             return Err(format!(
                 "ray traversal exceeded a hit, interval, or BVH-stack capacity {overflow} times \
                  at height {height_mm} mm"
             ));
         }
-        Ok(Some(bytes_to_f32(&raw, count)))
+        Ok(Some(bytes_to_f32(
+            &raw,
+            if output_mode == OutputMode::Tensor {
+                count * 6
+            } else {
+                count
+            },
+        )))
     }
-
 }

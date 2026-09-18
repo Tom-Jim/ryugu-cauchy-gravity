@@ -1,11 +1,13 @@
 impl GpuSolver {
-async fn run_mascon(
+    async fn run_mascon(
         &mut self,
         start: usize,
         end: usize,
         height_mm: f64,
         density_mode: &str,
         signal: &JsValue,
+        output_mode: OutputMode,
+        theta: Option<f64>,
     ) -> Result<Option<Vec<f32>>, String> {
         let tree_url = pipeline_url(ASSET_MASCON_TREE, &self.base_url);
         let point_url = pipeline_url(ASSET_MASCON, &self.base_url);
@@ -24,7 +26,7 @@ async fn run_mascon(
         // block of the run, so they are built once. Uploading them per block
         // would copy 113 MB forty-eight times over a full sweep.
         let key = format!("{tree_url}:mascon");
-        if !self.mascon_buffers.contains_key(&key) {
+        if self.mascon_buffers.get(&key).is_none() {
             let buffers = MasconBuffers {
                 nodes: self.storage_buffer("Mascon nodes", &tree_bytes[tree.nodes.clone()]),
                 points: self
@@ -34,7 +36,17 @@ async fn run_mascon(
             self.mascon_buffers.insert(key.clone(), Rc::new(buffers));
         }
         let buffers = self.mascon_buffers[&key].clone();
-        let pipeline = self.pipeline("mascon_tree", "mascon_tree").await?;
+        let pipeline_name = if output_mode == OutputMode::Tensor {
+            "mascon_tensor"
+        } else {
+            "mascon_tree"
+        };
+        let entry_point = if output_mode == OutputMode::Tensor {
+            "mascon_tensor"
+        } else {
+            "mascon_tree"
+        };
+        let pipeline = self.pipeline(pipeline_name, entry_point).await?;
         let count = end - start;
 
         let geometry_url = pipeline_url(ASSET_GEOMETRY, &self.base_url);
@@ -42,7 +54,7 @@ async fn run_mascon(
         let geometry = parse_face_asset(&geometry_bytes, FACE_MAGIC_WERNER, Some(FACE_COUNT))?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_key = format!("{geometry_url}:faces");
-        if !self.face_buffers.contains_key(&geometry_key) {
+        if self.face_buffers.get(&geometry_key).is_none() {
             let buffer = self.storage_buffer("observation faces", &geometry_records);
             self.face_buffers.insert(geometry_key.clone(), buffer);
         }
@@ -52,9 +64,14 @@ async fn run_mascon(
             .observer_resources(&geometry_buffer, start, count, height_mm)
             .await?;
         let observer_buffer = observer.points.clone();
+        let output_components = if output_mode == OutputMode::Tensor {
+            6
+        } else {
+            1
+        };
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mascon scalars"),
-            size: (count * 4).max(16) as u64,
+            size: (count * output_components * 4).max(16) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -62,7 +79,7 @@ async fn run_mascon(
         globals[0] = count as f32;
         globals[1] = tree.node_count as f32;
         globals[2] = G as f32;
-        globals[3] = MASCON_THETA;
+        globals[3] = theta.unwrap_or(MASCON_THETA as f64).clamp(0.01, 1.0) as f32;
         globals[4] = tree.min[0] as f32;
         globals[5] = tree.min[1] as f32;
         globals[6] = tree.min[2] as f32;
@@ -135,12 +152,13 @@ async fn run_mascon(
         if let Some(error) = error_scope.pop().await {
             return Err(format!("WebGPU Mascon pass failed validation: {error}"));
         }
-        let raw = self.read_buffer(&output, (count * 4) as u64, None).await;
+        let raw = self
+            .read_buffer(&output, (count * output_components * 4) as u64, None)
+            .await;
         observer_buffer.destroy();
         observer.global_buffer.destroy();
         output.destroy();
         global_buffer.destroy();
-        Ok(Some(bytes_to_f32(&raw?, count)))
+        Ok(Some(bytes_to_f32(&raw?, count * output_components)))
     }
-
 }

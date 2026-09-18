@@ -96,4 +96,3 @@ fn selftest(args: &Args) -> Result<(), String> {
     selftest_carlson_alpha(args)?;
     selftest_gpu(args)
 }
-

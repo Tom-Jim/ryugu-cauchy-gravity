@@ -30,6 +30,7 @@ include!("statistics.rs");
 include!("comparison_spec.rs");
 include!("platform.rs");
 include!("state.rs");
+include!("diagnostics.rs");
 include!("api.rs");
 include!("bootstrap.rs");
 include!("labels.rs");

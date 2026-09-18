@@ -16,6 +16,7 @@ struct Globals {
     n_dirs: u32,
     n_kernels: u32,
     g: f32,
+    quadrature_nodes: u32,
 }
 
 struct Kernel {
@@ -90,7 +91,7 @@ fn radial_remainder(k: Kernel, p: vec3<f32>, u: vec3<f32>, a: f32, b: f32) -> f3
     let mid = 0.5 * (a + b);
     let half = 0.5 * (b - a);
     var sum = 0.0;
-    for (var i = 0u; i < 16u; i = i + 1u) {
+    for (var i = 0u; i < min(globals.quadrature_nodes, 16u); i = i + 1u) {
         let r = mid + half * GL_X[i];
         let d = max(aa - 2.0 * s2 * bb * r + s2 * r * r, 1e-30);
         sum = sum + GL_W[i] * (pow(d, -k.alpha) - phi0) / max(r, 1e-30);

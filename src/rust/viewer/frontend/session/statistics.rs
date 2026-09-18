@@ -154,4 +154,3 @@ fn scalar_diff_stats(a: &ParsedRecord, b: &ParsedRecord, rel_eps: f64) -> Option
         max: relative[relative.len() - 1] as f64,
     })
 }
-

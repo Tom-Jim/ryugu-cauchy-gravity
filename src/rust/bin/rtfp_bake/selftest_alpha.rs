@@ -87,4 +87,3 @@ fn selftest_carlson_alpha(args: &Args) -> Result<(), String> {
     }
     Ok(())
 }
-

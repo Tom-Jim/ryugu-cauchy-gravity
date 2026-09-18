@@ -9,12 +9,17 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
-    /// `new Session(viewerUi, saved, baseUrl)`.
+    /// `new Session(viewerUi, saved, diagnostics, baseUrl)`.
     #[wasm_bindgen(constructor)]
-    pub fn new(viewer_ui: JsValue, saved: JsValue, base_url: Option<String>) -> Session {
+    pub fn new(
+        viewer_ui: JsValue,
+        saved: JsValue,
+        diagnostics: JsValue,
+        base_url: Option<String>,
+    ) -> Session {
         let core = Core {
             base_url: base_url.unwrap_or_else(|| "./".to_string()),
-            ui: Ui::new(&viewer_ui, &saved),
+            ui: Ui::new(&viewer_ui, &saved, &diagnostics),
             store: Rc::new(Store::new()),
             engine: None,
             algo: "werner".to_string(),
@@ -25,6 +30,7 @@ impl Session {
             record_generation: 0,
             stats_generation: None,
             compute_running: false,
+            diagnostic_running: false,
             compute_target: None,
             compute_generation: 0,
             compute_abort: None,
@@ -161,7 +167,27 @@ impl Session {
 
     pub fn on_download_current(&self) {
         let core = self.core.clone();
-        spawn_local(async move { download_current(&core).await; });
+        spawn_local(async move {
+            download_current(&core).await;
+        });
+    }
+
+    /// Run an opt-in chart diagnostic through the existing WebGPU pipelines.
+    /// The diagnostic never updates the Bevy renderer or the saved-result store.
+    pub fn run_diagnostic(&self, kind: String) {
+        start_diagnostic(&self.core, &kind);
+    }
+
+    pub async fn evaluate_diagnostic(&self, options: JsValue) -> Result<JsValue, JsValue> {
+        let mut engine = self
+            .core
+            .borrow_mut()
+            .engine
+            .take()
+            .ok_or_else(|| JsValue::from_str("WebGPU computation backend is unavailable"))?;
+        let result = engine.evaluate_diagnostic(options).await;
+        self.core.borrow_mut().engine = Some(engine);
+        result
     }
 
     pub fn on_delete_current(&self) {
