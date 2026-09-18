@@ -378,10 +378,10 @@
               <line class="diagnostic-axis" :x1="panel.offsetX + panel.inner.left" :x2="panel.offsetX + panel.inner.left"
                     :y1="panel.inner.top" :y2="panel.height - panel.inner.bottom" />
               <path v-for="line in panel.paths" :key="`${panel.facet}-${line.name}`" class="diagnostic-path"
-                    :d="line.path" :stroke="line.color" :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : 'none'" />
+                    :d="line.path" :stroke="line.color" :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : line.dash === 'dashdot' ? '10 3 2 3' : line.dash === 'longdash' ? '10 4' : 'none'" />
               <g v-for="(line, index) in panel.paths" :key="`legend-${panel.facet}-${line.name}`" :transform="`translate(${panel.offsetX + panel.inner.left + (index % 2) * (panel.width / 2 - 10)}, ${panel.inner.top - 42 + Math.floor(index / 2) * 18})`">
                 <line :x1="0" :x2="20" y1="0" y2="0" :stroke="line.color" class="diagnostic-path"
-                      :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : 'none'" />
+                      :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : line.dash === 'dashdot' ? '10 3 2 3' : line.dash === 'longdash' ? '10 4' : 'none'" />
                 <text class="diagnostic-legend" x="26" y="4">{{ line.name }}</text>
               </g>
               <text class="diagnostic-label" :x="panel.offsetX + panel.width / 2" :y="panel.height - 6" text-anchor="middle">{{ diagnostics.xLabel }}</text>

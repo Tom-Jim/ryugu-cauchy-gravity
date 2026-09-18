@@ -16,6 +16,7 @@ type SessionController = {
 
 type DiagnosticPoint = { x: number; y: number };
 type DiagnosticSeries = { name: string; color: string; facet: string; dash: string; points: DiagnosticPoint[] };
+type DiagnosticScale = "linear" | "log";
 
 // View layer only.
 //
@@ -87,8 +88,8 @@ export const diagnostics = reactive({
   title: "",
   xLabel: "",
   yLabel: "",
-  xScale: "linear" as const,
-  yScale: "linear" as const,
+  xScale: "log" as DiagnosticScale,
+  yScale: "log" as DiagnosticScale,
   busy: false,
   ready: false,
   progress: 0,
@@ -126,41 +127,98 @@ const diagnosticChart = computed(() => {
     if (magnitude === 0) return "0.00000";
     return value.toFixed(Math.min(12, Math.max(5, Math.ceil(-Math.log10(magnitude)) + 3)));
   };
-  const expandDomain = (low: number, high: number): [number, number] => {
+  const toDomainValue = (value: number, scale: DiagnosticScale): number => (
+    scale === "log" ? Math.log10(value) : value
+  );
+  const isPlottable = (value: number, scale: DiagnosticScale): boolean => (
+    Number.isFinite(value) && (scale !== "log" || value > 0)
+  );
+  const expandDomain = (values: number[], scale: DiagnosticScale): [number, number] => {
+    const valid = values.filter((value) => isPlottable(value, scale)).map((value) => toDomainValue(value, scale));
+    if (valid.length === 0) return [0, 1];
+    let low = Math.min(...valid);
+    let high = Math.max(...valid);
     const span = high - low;
-    const margin = span === 0 ? Math.max(Math.abs(low) * 0.1, 1) : Math.max(Math.abs(span) * 0.08, 1e-9);
-    return [low - margin, high + margin];
+    if (span === 0) {
+      const margin = scale === "log" ? 0.5 : Math.max(Math.abs(low) * 0.1, 1);
+      low -= margin;
+      high += margin;
+    } else {
+      const margin = Math.max(span * 0.08, scale === "log" ? 0.12 : 1e-9);
+      low -= margin;
+      high += margin;
+    }
+    if (scale === "linear") low = Math.max(0, low);
+    return [low, high];
+  };
+  const tickValues = (low: number, high: number, scale: DiagnosticScale) => {
+    if (scale !== "log") {
+      return Array.from({ length: 5 }, (_, index) => low + (high - low) * index / 4);
+    }
+    const firstExponent = Math.ceil(low);
+    const lastExponent = Math.floor(high);
+    const exponents = Array.from(
+      { length: Math.max(0, lastExponent - firstExponent + 1) },
+      (_, index) => firstExponent + index,
+    );
+    if (exponents.length === 0) return [10 ** low, 10 ** high];
+    if (exponents.length <= 9) return exponents.map((exponent) => 10 ** exponent);
+    const step = Math.ceil(exponents.length / 8);
+    return exponents.filter((_, index) => index % step === 0).map((exponent) => 10 ** exponent);
+  };
+  const formatTick = (value: number, scale: DiagnosticScale): string => {
+    if (scale === "log") {
+      const exponent = Math.floor(Math.log10(value));
+      const mantissa = value / 10 ** exponent;
+      return `${mantissa.toPrecision(mantissa >= 10 ? 2 : 1)}e${exponent}`;
+    }
+    return formatDecimal(value);
   };
   const panels = facetNames.map((facet, facetIndex) => {
     const selected = diagnostics.series.filter((series) => facet === "all" || series.facet === facet);
-    const points = selected.flatMap((series) => series.points).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const validPoint = (point: DiagnosticPoint) => (
+      isPlottable(point.x, diagnostics.xScale) && isPlottable(point.y, diagnostics.yScale)
+    );
+    const points = selected.flatMap((series) => series.points).filter(validPoint);
     const innerWidth = panelWidth - pad.left - pad.right;
     const innerHeight = height - pad.top - pad.bottom;
     if (points.length === 0) {
       return { facet, offsetX: facetIndex * panelWidth, width: panelWidth, height, inner: { ...pad, innerWidth, innerHeight }, ticksX: [], ticksY: [], paths: [] };
     }
-    let [minX, maxX] = expandDomain(Math.min(...points.map((point) => point.x)), Math.max(...points.map((point) => point.x)));
-    let [minY, maxY] = expandDomain(Math.min(...points.map((point) => point.y)), Math.max(...points.map((point) => point.y)));
-    const x = (value: number) => facetIndex * panelWidth + pad.left + ((value - minX) / (maxX - minX)) * innerWidth;
-    const y = (value: number) => pad.top + innerHeight - ((value - minY) / (maxY - minY)) * innerHeight;
-    const ticks = (low: number, high: number) => Array.from({ length: 5 }, (_, index) => {
-      const value = low + (high - low) * index / 4;
-      return { value, label: formatDecimal(value) };
-    });
+    let [minX, maxX] = expandDomain(points.map((point) => point.x), diagnostics.xScale);
+    let [minY, maxY] = expandDomain(points.map((point) => point.y), diagnostics.yScale);
+    const x = (value: number) => facetIndex * panelWidth + pad.left + ((toDomainValue(value, diagnostics.xScale) - minX) / (maxX - minX)) * innerWidth;
+    const y = (value: number) => pad.top + innerHeight - ((toDomainValue(value, diagnostics.yScale) - minY) / (maxY - minY)) * innerHeight;
+    const ticks = (low: number, high: number, scale: DiagnosticScale) => tickValues(low, high, scale)
+      .filter((value) => {
+        const transformed = toDomainValue(value, scale);
+        return transformed >= low - 1e-9 && transformed <= high + 1e-9;
+      })
+      .map((value) => ({ value, label: formatTick(value, scale) }));
+    const pathFor = (series: DiagnosticSeries) => {
+      let path = "";
+      let open = false;
+      for (const point of series.points) {
+        if (!validPoint(point)) {
+          open = false;
+          continue;
+        }
+        path += `${open ? "L" : "M"}${x(point.x).toFixed(2)},${y(point.y).toFixed(2)} `;
+        open = true;
+      }
+      return path.trim();
+    };
     return {
       facet,
       offsetX: facetIndex * panelWidth,
       width: panelWidth,
       height,
       inner: { ...pad, innerWidth, innerHeight },
-      ticksX: ticks(minX, maxX).map((tick) => ({ ...tick, position: x(tick.value) })),
-      ticksY: ticks(minY, maxY).map((tick) => ({ ...tick, position: y(tick.value) })),
+      ticksX: ticks(minX, maxX, diagnostics.xScale).map((tick) => ({ ...tick, position: x(tick.value) })),
+      ticksY: ticks(minY, maxY, diagnostics.yScale).map((tick) => ({ ...tick, position: y(tick.value) })),
       paths: selected.map((series) => ({
         ...series,
-        path: series.points
-          .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-          .map((point, index) => `${index === 0 ? "M" : "L"}${x(point.x).toFixed(2)},${y(point.y).toFixed(2)}`)
-          .join(" "),
+        path: pathFor(series),
       })),
     };
   });

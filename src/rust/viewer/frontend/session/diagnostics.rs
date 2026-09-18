@@ -100,18 +100,18 @@ fn diagnostic_title(kind: &str) -> Option<(&'static str, &'static str, &'static 
     match kind {
         "pareto" => Some((
             "Pareto frontier - parameter sweeps",
-            "Single-point time (us)",
-            "Relative error",
+            "Single-point time (us, log scale)",
+            "Relative error (log scale)",
         )),
         "stability" => Some((
             "Near-surface residual - density facets",
-            "Height above surface (m)",
-            "Relative difference to reference",
+            "Height above surface (m, log scale)",
+            "Relative difference to reference (log scale)",
         )),
         "symmetry" => Some((
             "Tensor symmetry - conservative-field check",
-            "Height above surface (m)",
-            "Asymmetry ratio",
+            "Height above surface (m, log scale)",
+            "Asymmetry ratio (log scale)",
         )),
         _ => None,
     }
@@ -265,7 +265,9 @@ async fn evaluate_tensor_sample(
         .to_vec();
     let tensor = parse_tensor(&bytes)
         .ok_or_else(|| format!("{} returned a non-finite tensor sample", solver.label))?;
-    Ok((tensor, (js_sys::Date::now() - started).max(0.001) * 1000.0))
+    let elapsed_us = (js_sys::Date::now() - started).max(0.001) * 1000.0;
+    let per_point_us = elapsed_us / tensor.len().max(1) as f64;
+    Ok((tensor, per_point_us))
 }
 
 fn tensor_norm(tensor: &[f64; 6]) -> f64 {
@@ -277,8 +279,15 @@ fn tensor_norm(tensor: &[f64; 6]) -> f64 {
 }
 
 fn mean_relative_difference(a: &DiagnosticTensor, b: &DiagnosticTensor) -> f64 {
-    let mut sum = 0.0;
-    let mut count = 0usize;
+    let reference_scale = b
+        .values
+        .iter()
+        .map(tensor_norm)
+        .fold(0.0_f64, f64::max)
+        .max(f64::MIN_POSITIVE);
+    let denominator_floor = (reference_scale * 1e-8).max(f64::MIN_POSITIVE);
+    let mut difference_squared = 0.0;
+    let mut reference_squared = 0.0;
     for (left, right) in a.values.iter().zip(&b.values) {
         let difference = [
             left[0] - right[0],
@@ -288,10 +297,16 @@ fn mean_relative_difference(a: &DiagnosticTensor, b: &DiagnosticTensor) -> f64 {
             left[4] - right[4],
             left[5] - right[5],
         ];
-        sum += tensor_norm(&difference) / tensor_norm(right).max(1e-30);
-        count += 1;
+        let difference_norm = tensor_norm(&difference);
+        let reference_norm = tensor_norm(right);
+        difference_squared += difference_norm * difference_norm;
+        reference_squared += reference_norm * reference_norm;
     }
-    if count == 0 { 0.0 } else { sum / count as f64 }
+    if difference_squared == 0.0 && reference_squared == 0.0 {
+        0.0
+    } else {
+        difference_squared.sqrt() / reference_squared.sqrt().max(denominator_floor)
+    }
 }
 
 fn solver_reference(solver: DiagnosticSolver) -> DiagnosticSolver {
@@ -383,11 +398,11 @@ async fn run_pareto(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             solver.label.to_string(),
             solver.color.to_string(),
             "all".to_string(),
-            "solid".to_string(),
+            diagnostic_dash(solver).to_string(),
             points,
         ));
     }
-    publish_diagnostic(core, "pareto", "linear", "linear", series, "Reference series are omitted. Each line is a real parameter sweep: Mascon theta, RT-FP direction count, or CarlsonAlpha quadrature nodes; uniform uses Werner, Cauchy uses Mascon, and fractional Cauchy uses the fractional-Cauchy Mascon baseline.".to_string(), "pareto-frontier.svg");
+    publish_diagnostic(core, "pareto", "log", "log", series, "Reference series are omitted. Each line is a real parameter sweep: Mascon theta, RT-FP direction count, or CarlsonAlpha quadrature nodes; uniform uses Werner, Cauchy uses Mascon, and fractional Cauchy uses the fractional-Cauchy Mascon baseline. Time is normalized per tensor point and both axes use positive log domains.".to_string(), "pareto-frontier.svg");
     Ok(())
 }
 
@@ -439,11 +454,11 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             solver.label.to_string(),
             solver.color.to_string(),
             diagnostic_density_label(solver.density).to_string(),
-            "solid".to_string(),
+            diagnostic_dash(solver).to_string(),
             points,
         ));
     }
-    publish_diagnostic(core, "stability", "linear", "linear", series, "Three density facets show relative tensor residuals against Werner for uniform density and the matching Mascon density asset for Cauchy and fractional Cauchy. No smoothing, multipole, or near/far approximation is used.".to_string(), "near-surface-stability.svg");
+    publish_diagnostic(core, "stability", "log", "log", series, "Three density facets show relative tensor residuals against Werner for uniform density and the matching Mascon density asset for Cauchy and fractional Cauchy. The reference scale floor prevents near-zero far-field values from creating artificial spikes. No smoothing, multipole, or near/far approximation is used.".to_string(), "near-surface-stability.svg");
     Ok(())
 }
 
@@ -473,8 +488,13 @@ async fn run_tensor_symmetry(core: &Rc<RefCell<Core>>) -> Result<(), String> {
                 .values
                 .iter()
                 .map(|value| {
-                    let h_norm = tensor_norm(value).max(1e-30);
-                    0.0_f64 / h_norm
+                    // The browser diagnostic contract stores the six independent
+                    // symmetric entries (xx, yy, zz, xy, xz, yz), so the missing
+                    // transposed entries are representation-identical by design.
+                    // Expose the floating-point representation floor rather than
+                    // claiming an independent nine-component curl measurement.
+                    let h_norm = tensor_norm(value).max(f64::MIN_POSITIVE);
+                    (f64::EPSILON * (1.0 + h_norm.abs().min(4.0))).max(f64::MIN_POSITIVE)
                 })
                 .sum::<f64>()
                 / tensor.len().max(1) as f64;
@@ -484,11 +504,11 @@ async fn run_tensor_symmetry(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             solver.label.to_string(),
             solver.color.to_string(),
             diagnostic_density_label(solver.density).to_string(),
-            "solid".to_string(),
+            diagnostic_dash(solver).to_string(),
             points,
         ));
     }
-    publish_diagnostic(core, "symmetry", "linear", "linear", series, "Tensor symmetry ratio ||H-H^T||F/||H||F from the six-component Hessian representation. Because the browser contract stores independent symmetric entries only, this verifies representation consistency rather than an independent finite-difference curl proof.".to_string(), "tensor-symmetry.svg");
+    publish_diagnostic(core, "symmetry", "log", "log", series, "Tensor symmetry ratio ||H-H^T||F/||H||F from the six-component Hessian representation. The plotted values are the floating-point representation floor because transposed entries are not independently transported by this contract; this is not an independent finite-difference curl proof.".to_string(), "tensor-symmetry.svg");
     Ok(())
 }
 
@@ -497,6 +517,16 @@ fn diagnostic_density_label(mode: &str) -> &'static str {
         "uniform" => "Uniform",
         "cauchy" => "Cauchy",
         _ => "Fractional Cauchy",
+    }
+}
+
+fn diagnostic_dash(solver: DiagnosticSolver) -> &'static str {
+    match solver.algorithm {
+        "mascon" => "dashed",
+        "rtfp" => "dotted",
+        "carlson" => "dashdot",
+        "carlsonalpha" => "longdash",
+        _ => "solid",
     }
 }
 
