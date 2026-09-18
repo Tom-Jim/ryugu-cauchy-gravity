@@ -38,7 +38,9 @@ fn make_record(checkpoint: Option<&[u8]>, height_mm: f64, count: usize) -> Vec<u
         && (f32_at(&bytes, 16) as f64 - height_mm).abs() <= 1e-3;
     if !compatible {
         bytes.fill(0);
-        for scalar in bytes[RECORD_HEADER..].chunks_exact_mut(4) {
+        let (scalars, remainder) = bytes[RECORD_HEADER..].as_chunks_mut::<4>();
+        debug_assert!(remainder.is_empty());
+        for scalar in scalars {
             scalar.copy_from_slice(&f32::NAN.to_le_bytes());
         }
     }

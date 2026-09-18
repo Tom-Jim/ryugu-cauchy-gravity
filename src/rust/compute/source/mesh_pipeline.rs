@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+
 fn build_face_records(triangles: &[Triangle], weight: f64) -> Vec<f32> {
     let mut out = vec![0.0f32; triangles.len() * 16];
     for (face, triangle) in triangles.iter().enumerate() {
@@ -228,8 +230,8 @@ fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Vec<u8> {
     for triangle in triangles {
         for point in [triangle.a, triangle.b, triangle.c] {
             let key = vertex_key(point);
-            if !map.contains_key(&key) {
-                map.insert(key, positions.len() as u32);
+            if let Entry::Vacant(entry) = map.entry(key) {
+                entry.insert(positions.len() as u32);
                 positions.push(point);
             }
         }

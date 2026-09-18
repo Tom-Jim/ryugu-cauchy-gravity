@@ -61,7 +61,9 @@ impl Mesh {
             );
         }
         if signed_six_volume < 0.0 {
-            for face in mesh.faces.chunks_exact_mut(3) {
+            let (faces, remainder) = mesh.faces.as_chunks_mut::<3>();
+            debug_assert!(remainder.is_empty());
+            for face in faces {
                 face.swap(1, 2);
             }
         }

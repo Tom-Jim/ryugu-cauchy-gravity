@@ -19,7 +19,7 @@ impl GpuSolver {
         let faces = parse_face_asset(&face_bytes, face_magic, None)?;
         let face_records = face_bytes[faces.records.clone()].to_vec();
         let face_buffer_key = format!("{face_asset}:faces");
-        if !self.face_buffers.contains_key(&face_buffer_key) {
+        if self.face_buffers.get(&face_buffer_key).is_none() {
             let buffer = self.storage_buffer("surface faces", &face_records);
             self.face_buffers.insert(face_buffer_key.clone(), buffer);
         }
@@ -29,10 +29,9 @@ impl GpuSolver {
         let geometry = parse_face_asset(&geometry_bytes, geometry_magic, Some(FACE_COUNT))?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_buffer_key = format!("{geometry_asset}:faces");
-        if !self.face_buffers.contains_key(&geometry_buffer_key) {
+        if self.face_buffers.get(&geometry_buffer_key).is_none() {
             let buffer = self.storage_buffer("observation faces", &geometry_records);
-            self.face_buffers
-                .insert(geometry_buffer_key.clone(), buffer);
+            self.face_buffers.insert(geometry_buffer_key.clone(), buffer);
         }
         let geometry_buffer = self.face_buffers[&geometry_buffer_key].clone();
 

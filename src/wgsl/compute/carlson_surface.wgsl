@@ -89,12 +89,12 @@ fn carlson_surface(
   @builtin(local_invocation_id) local: vec3<u32>,
 ) {
   let local_point = workgroup.x + workgroup.y * globals.grid_x;
-  if (local_point >= globals.n_points) {
-    return;
-  }
   let point = local_point + globals.point_offset;
-
-  let observer = observers[point].xyz;
+  let point_is_active = local_point < globals.n_points;
+  var observer = vec3<f32>(0.0);
+  if (point_is_active) {
+    observer = observers[point].xyz;
+  }
   var accumulated = array<f32, COMPONENTS>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   for (var face = local.x; face < globals.n_faces; face += WG) {
     let row = 4u * face;
@@ -114,22 +114,51 @@ fn carlson_surface(
   }
   workgroupBarrier();
 
-  var stride = WG / 2u;
-  loop {
-    if (stride == 0u) {
-      break;
+  // WG is fixed at 64. Keep the six reduction stages explicit so the shader
+  // has no dynamic reduction exit or branch divergence.
+  if (local.x < 32u) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      let slot = local.x * COMPONENTS + component;
+      sums[slot] += sums[slot + 32u * COMPONENTS];
     }
-    if (local.x < stride) {
-      for (var component = 0u; component < COMPONENTS; component += 1u) {
-        let slot = local.x * COMPONENTS + component;
-        sums[slot] += sums[slot + stride * COMPONENTS];
-      }
-    }
-    workgroupBarrier();
-    stride /= 2u;
   }
+  workgroupBarrier();
+  if (local.x < 16u) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      let slot = local.x * COMPONENTS + component;
+      sums[slot] += sums[slot + 16u * COMPONENTS];
+    }
+  }
+  workgroupBarrier();
+  if (local.x < 8u) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      let slot = local.x * COMPONENTS + component;
+      sums[slot] += sums[slot + 8u * COMPONENTS];
+    }
+  }
+  workgroupBarrier();
+  if (local.x < 4u) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      let slot = local.x * COMPONENTS + component;
+      sums[slot] += sums[slot + 4u * COMPONENTS];
+    }
+  }
+  workgroupBarrier();
+  if (local.x < 2u) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      let slot = local.x * COMPONENTS + component;
+      sums[slot] += sums[slot + 2u * COMPONENTS];
+    }
+  }
+  workgroupBarrier();
+  if (local.x == 0u && point_is_active) {
+    for (var component = 0u; component < COMPONENTS; component += 1u) {
+      sums[component] += sums[COMPONENTS];
+    }
+  }
+  workgroupBarrier();
 
-  if (local.x == 0u) {
+  if (local.x == 0u && point_is_active) {
     let base = point * COMPONENTS;
     for (var component = 0u; component < COMPONENTS; component += 1u) {
       carlson_out[base + component] = sums[component] * globals.g;

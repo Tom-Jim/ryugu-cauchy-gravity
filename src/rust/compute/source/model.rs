@@ -85,37 +85,39 @@ fn parse_glb_model(glb: &[u8]) -> Result<Vec<Triangle>, String> {
         .ok_or("GLB triangle primitive has no index accessor")?
         .into_u32()
         .collect();
-    if indices.len() % 3 != 0 {
+    if !indices.len().is_multiple_of(3) {
         return Err("GLB triangle index count is not divisible by three".into());
     }
+    let (faces, remainder) = indices.as_chunks::<3>();
+    debug_assert!(remainder.is_empty());
     let mut signed_six_volume = 0.0f64;
-    for face in indices.chunks_exact(3) {
+    for &[i0, i1, i2] in faces {
         let a = vertices
-            .get(face[0] as usize)
+            .get(i0 as usize)
             .copied()
-            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[0], vertices.len()))?;
+            .ok_or_else(|| format!("GLB index {i0} exceeds {} vertices", vertices.len()))?;
         let b = vertices
-            .get(face[1] as usize)
+            .get(i1 as usize)
             .copied()
-            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[1], vertices.len()))?;
+            .ok_or_else(|| format!("GLB index {i1} exceeds {} vertices", vertices.len()))?;
         let c = vertices
-            .get(face[2] as usize)
+            .get(i2 as usize)
             .copied()
-            .ok_or_else(|| format!("GLB index {} exceeds {} vertices", face[2], vertices.len()))?;
+            .ok_or_else(|| format!("GLB index {i2} exceeds {} vertices", vertices.len()))?;
         signed_six_volume += dot(a, cross(b, c));
     }
     let reverse_winding = signed_six_volume < 0.0;
     let mut triangles = Vec::with_capacity(indices.len() / 3);
-    for face in indices.chunks_exact(3) {
+    for &[i0, i1, i2] in faces {
         let point = |index: u32| {
             vertices
                 .get(index as usize)
                 .copied()
                 .ok_or_else(|| format!("GLB index {index} exceeds {} vertices", vertices.len()))
         };
-        let a = point(face[0])?;
-        let b = point(face[1])?;
-        let c = point(face[2])?;
+        let a = point(i0)?;
+        let b = point(i1)?;
+        let c = point(i2)?;
         triangles.push(if reverse_winding {
             make_triangle(a, c, b)
         } else {
