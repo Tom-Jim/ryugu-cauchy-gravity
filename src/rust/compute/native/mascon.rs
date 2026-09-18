@@ -226,16 +226,14 @@ impl Tree {
                 let (mass, com_slot) = match mode {
                     0 => (self.node(node, 4), 8),
                     1 => (self.node(node, 5), 12),
-                    _ => {
-                        (
-                            self.constant_density as f64
-                                * cell[0]
-                                * cell[1]
-                                * cell[2]
-                                * self.node(node, 19),
-                            16,
-                        )
-                    }
+                    _ => (
+                        self.constant_density as f64
+                            * cell[0]
+                            * cell[1]
+                            * cell[2]
+                            * self.node(node, 19),
+                        16,
+                    ),
                 };
                 Self::add_point(
                     &mut out,

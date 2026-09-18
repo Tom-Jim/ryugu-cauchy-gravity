@@ -237,7 +237,10 @@ impl Density {
                 c: [k.c[0] * 1000.0, k.c[1] * 1000.0, k.c[2] * 1000.0],
                 sigma: k.sigma / 1000.0,
                 w: k.w,
-                alpha: k.alpha.filter(|alpha| *alpha > 0.0).unwrap_or(alpha_default),
+                alpha: k
+                    .alpha
+                    .filter(|alpha| *alpha > 0.0)
+                    .unwrap_or(alpha_default),
             })
             .collect();
         let radius = crate::body_radius(mesh);

@@ -48,11 +48,8 @@ impl RuntimeSource {
 
     pub fn rtfp(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
         let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
-        let kernels = normalize_kernels(
-            &self.triangles,
-            &density.kernels,
-            density.total_mass_target,
-        )?;
+        let kernels =
+            normalize_kernels(&self.triangles, &density.kernels, density.total_mass_target)?;
         Ok(build_mesh_pipeline(&self.triangles, &kernels))
     }
 
@@ -98,7 +95,11 @@ impl RuntimeSource {
     }
 
     pub fn vtk_polydata(&self, scalars: &[f32]) -> Vec<u8> {
-        let points = self.triangles.iter().flat_map(|t| [t.a, t.b, t.c]).collect::<Vec<_>>();
+        let points = self
+            .triangles
+            .iter()
+            .flat_map(|t| [t.a, t.b, t.c])
+            .collect::<Vec<_>>();
         let triangle_count = self.triangles.len();
         let mut out = String::from(
             "<?xml version=\"1.0\"?>\n\
@@ -111,7 +112,10 @@ impl RuntimeSource {
         ));
         out.push_str("      <Points>\n        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n");
         for point in points {
-            out.push_str(&format!("          {:.9} {:.9} {:.9}\n", point[0], point[1], point[2]));
+            out.push_str(&format!(
+                "          {:.9} {:.9} {:.9}\n",
+                point[0], point[1], point[2]
+            ));
         }
         out.push_str("        </DataArray>\n      </Points>\n      <Polys>\n        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n");
         for index in 0..triangle_count {
@@ -124,9 +128,14 @@ impl RuntimeSource {
         }
         out.push_str("        </DataArray>\n      </Polys>\n      <CellData Scalars=\"gravity_gradient\">\n        <DataArray type=\"Float32\" Name=\"gravity_gradient\" format=\"ascii\">\n");
         for index in 0..triangle_count {
-            out.push_str(&format!("          {:.9}\n", scalars.get(index).copied().unwrap_or(0.0)));
+            out.push_str(&format!(
+                "          {:.9}\n",
+                scalars.get(index).copied().unwrap_or(0.0)
+            ));
         }
-        out.push_str("        </DataArray>\n      </CellData>\n    </Piece>\n  </PolyData>\n</VTKFile>\n");
+        out.push_str(
+            "        </DataArray>\n      </CellData>\n    </Piece>\n  </PolyData>\n</VTKFile>\n",
+        );
         out.into_bytes()
     }
 }

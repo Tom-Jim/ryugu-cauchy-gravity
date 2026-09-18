@@ -203,7 +203,10 @@ fn prepare_paint_target(
         let Some(n_faces) = triangle_count(src) else {
             continue;
         };
-        if best.as_ref().is_none_or(|(_, _, count, _)| n_faces > *count) {
+        if best
+            .as_ref()
+            .is_none_or(|(_, _, count, _)| n_faces > *count)
+        {
             best = Some((
                 entity,
                 mesh3d.0.clone(),
