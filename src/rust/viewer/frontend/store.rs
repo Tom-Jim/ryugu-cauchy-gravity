@@ -1,16 +1,17 @@
-//! IndexedDB persistence for completed and checkpointed RHGF records.
+//! Browser-managed temporary storage for completed and checkpointed RHGF records.
 //!
 //! This is the Rust replacement for the storage half of `src/web/app.js`. The
 //! database layout is unchanged, so a viewer that already has saved results can
 //! keep reading them:
 //!
 //! * database `ryugu-cauchy-gravity`, version 2,
-//! * object store `saved-results`, key path `id`, holding 100 % records,
+//! * object store `saved-results`, key path `id`, holding completed temporary records,
 //! * object store `temporary-results`, key path `id`, holding resumable
 //!   checkpoints.
 //!
 //! Nothing here computes anything; it moves bytes in and out of the browser's
-//! own store so a reload can resume instead of restarting.
+//! own temporary storage so a reload can resume instead of restarting. The
+//! browser owns eviction of this storage; no project file is written.
 
 use std::cell::RefCell;
 use std::rc::Rc;

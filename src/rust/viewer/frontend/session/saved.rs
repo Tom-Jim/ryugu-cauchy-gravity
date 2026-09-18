@@ -7,12 +7,12 @@ fn format_saved_at(value: f64) -> String {
         return String::new();
     }
     js_sys::Date::new(&JsValue::from_f64(value))
-        .to_locale_string("", &Object::new())
+        .to_locale_string("en-US", &Object::new())
         .into()
 }
 
 fn format_faces(faces: f64) -> String {
-    js_sys::Number::from(faces).to_locale_string("").into()
+    js_sys::Number::from(faces).to_locale_string("en-US").into()
 }
 
 fn saved_item_object(row: &SavedRow) -> JsValue {
@@ -93,13 +93,19 @@ async fn download_current(core: &Rc<RefCell<Core>>) {
         let state = core.borrow();
         (state.latest_results.get(&state.active_key()).cloned(), state.ui.clone())
     };
+    if get_bool(&ui.saved, "busy") {
+        return;
+    }
+    set_bool(&ui.saved, "busy", true);
     let Some(record) = record else {
         set_str(&ui.saved, "message", "Download failed: no complete result is available.");
+        set_bool(&ui.saved, "busy", false);
         return;
     };
     let mut engine = core.borrow_mut().engine.take();
     let Some(engine_ref) = engine.as_mut() else {
         set_str(&ui.saved, "message", "Download failed: compute engine is unavailable.");
+        set_bool(&ui.saved, "busy", false);
         return;
     };
     let result = engine_ref
@@ -116,13 +122,37 @@ async fn download_current(core: &Rc<RefCell<Core>>) {
                 .ok();
             let Some(blob) = blob else {
                 set_str(&ui.saved, "message", "Download failed: could not create VTK data.");
+                set_bool(&ui.saved, "busy", false);
                 return;
             };
-            let Some(window) = web_sys::window() else { return; };
-            let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return; };
-            let Some(document) = window.document() else { return; };
-            let Ok(element) = document.create_element("a") else { return; };
-            let anchor = element.dyn_into::<web_sys::HtmlAnchorElement>().unwrap();
+            let Some(window) = web_sys::window() else {
+                set_str(&ui.saved, "message", "Download failed: browser window is unavailable.");
+                set_bool(&ui.saved, "busy", false);
+                return;
+            };
+            let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+                set_str(&ui.saved, "message", "Download failed: could not create a download URL.");
+                set_bool(&ui.saved, "busy", false);
+                return;
+            };
+            let Some(document) = window.document() else {
+                let _ = web_sys::Url::revoke_object_url(&url);
+                set_str(&ui.saved, "message", "Download failed: document is unavailable.");
+                set_bool(&ui.saved, "busy", false);
+                return;
+            };
+            let Ok(element) = document.create_element("a") else {
+                let _ = web_sys::Url::revoke_object_url(&url);
+                set_str(&ui.saved, "message", "Download failed: could not create a link.");
+                set_bool(&ui.saved, "busy", false);
+                return;
+            };
+            let Ok(anchor) = element.dyn_into::<web_sys::HtmlAnchorElement>() else {
+                let _ = web_sys::Url::revoke_object_url(&url);
+                set_str(&ui.saved, "message", "Download failed: invalid download link.");
+                set_bool(&ui.saved, "busy", false);
+                return;
+            };
             anchor.set_href(&url);
             anchor.set_download("ryugu-gravity-gradient.vtp");
             anchor.click();
@@ -131,6 +161,8 @@ async fn download_current(core: &Rc<RefCell<Core>>) {
         }
         Err(error) => set_str(&ui.saved, "message", &format!("Download failed: {error:?}")),
     }
+    set_bool(&ui.saved, "busy", false);
+    update_saved_flags(&core.borrow());
 }
 
 async fn save_current(core: &Rc<RefCell<Core>>) {

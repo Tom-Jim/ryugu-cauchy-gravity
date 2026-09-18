@@ -151,7 +151,7 @@ impl Session {
         set_bool(&ui.mobile, "visible", false);
     }
 
-    /// Save the current in-memory result as the durable 100 % record.
+    /// Save the current in-memory result in the browser's temporary store.
     pub fn on_save_current(&self) {
         let core = self.core.clone();
         spawn_local(async move {

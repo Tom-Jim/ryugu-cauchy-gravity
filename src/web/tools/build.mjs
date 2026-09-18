@@ -102,6 +102,11 @@ const bundle = await Bun.build({
   target: "browser",
   format: "esm",
   naming: "app.js",
+  define: {
+    __VUE_OPTIONS_API__: "true",
+    __VUE_PROD_DEVTOOLS__: "false",
+    __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: "false",
+  },
   // `app.ts` mounts the template already present in index.html. Vue's default
   // bundler export is runtime-only and clears that template without compiling
   // it, leaving the Bevy canvas visible but every control missing.

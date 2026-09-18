@@ -83,7 +83,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Install
         run: bun install --frozen-lockfile
@@ -128,11 +128,16 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack,binaryen
+          tool: wasm-pack
+
+      - name: Install Binaryen
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binaryen
 
       - name: Install
         run: bun install --frozen-lockfile

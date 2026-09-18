@@ -4,10 +4,10 @@
 
 /// Resolve a comparison reference at the target height.
 ///
-/// A saved 100 % record is the durable source for later comparisons, so it is
-/// consulted whenever this session has no runtime result for that track. Both
-/// sources carry the height they were baked at, which is what makes a
-/// face-by-face diff meaningful.
+/// A completed temporary record is the fallback source for later comparisons,
+/// so it is consulted whenever this session has no runtime result for that
+/// track. Both sources carry the height they were baked at, which is what
+/// makes a face-by-face diff meaningful.
 async fn reference_result_for(
     core: &Rc<RefCell<Core>>,
     reference: &CompareRef,
