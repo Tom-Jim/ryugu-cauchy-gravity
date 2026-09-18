@@ -148,7 +148,7 @@ jobs:
             - name: Build the static site
               run: bun run pages:build
 
-            - uses: actions/upload-pages-artifact@v3
+            - uses: actions/upload-pages-artifact@v5
               with:
                   path: dist/
 
