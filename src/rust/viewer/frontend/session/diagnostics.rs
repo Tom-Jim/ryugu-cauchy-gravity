@@ -185,11 +185,11 @@ async fn run_diagnostic(core: &Rc<RefCell<Core>>, kind: &str) -> Result<(), Stri
 }
 
 fn parse_tensor(bytes: &[u8]) -> Option<DiagnosticTensor> {
-    if bytes.is_empty() || bytes.len() % 24 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(24) {
         return None;
     }
     let mut values = Vec::with_capacity(bytes.len() / 24);
-    for chunk in bytes.chunks_exact(24) {
+    for chunk in bytes.as_chunks::<24>().0 {
         let mut tensor = [0.0; 6];
         for (index, value) in tensor.iter_mut().enumerate() {
             let start = index * 4;
@@ -209,6 +209,7 @@ fn set_optional_f64(options: &Object, name: &str, value: Option<f64>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn evaluate_tensor_sample(
     core: &Rc<RefCell<Core>>,
     solver: DiagnosticSolver,
@@ -499,6 +500,7 @@ fn diagnostic_density_label(mode: &str) -> &'static str {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn publish_diagnostic(
     core: &Rc<RefCell<Core>>,
     kind: &str,

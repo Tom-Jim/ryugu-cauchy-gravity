@@ -60,6 +60,7 @@ impl GpuSolver {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_carlson_alpha_tensor(
         &mut self,
         constant: bool,

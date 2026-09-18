@@ -1,4 +1,5 @@
 impl GpuSolver {
+    #[allow(clippy::too_many_arguments)]
     async fn run_mascon(
         &mut self,
         start: usize,
@@ -26,7 +27,7 @@ impl GpuSolver {
         // block of the run, so they are built once. Uploading them per block
         // would copy 113 MB forty-eight times over a full sweep.
         let key = format!("{tree_url}:mascon");
-        if self.mascon_buffers.get(&key).is_none() {
+        if !self.mascon_buffers.contains_key(&key) {
             let buffers = MasconBuffers {
                 nodes: self.storage_buffer("Mascon nodes", &tree_bytes[tree.nodes.clone()]),
                 points: self
@@ -54,7 +55,7 @@ impl GpuSolver {
         let geometry = parse_face_asset(&geometry_bytes, FACE_MAGIC_WERNER, Some(FACE_COUNT))?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_key = format!("{geometry_url}:faces");
-        if self.face_buffers.get(&geometry_key).is_none() {
+        if !self.face_buffers.contains_key(&geometry_key) {
             let buffer = self.storage_buffer("observation faces", &geometry_records);
             self.face_buffers.insert(geometry_key.clone(), buffer);
         }

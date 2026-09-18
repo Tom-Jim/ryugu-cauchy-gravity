@@ -24,7 +24,12 @@ impl Scene {
                 Err(e) => return Err(format!("readback channel: {e}")),
             }
         }
-        let mapped = self.readback.slice(..bytes as u64).get_mapped_range();
+        let mapped = self
+            .readback
+            .slice(..bytes as u64)
+            .get_mapped_range();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mapped = mapped.map_err(|e| format!("readback map range: {e}"))?;
         let mut out = Vec::with_capacity(count);
         for chunk in mapped.as_chunks::<4>().0 {
             out.push(f32::from_le_bytes(*chunk));
