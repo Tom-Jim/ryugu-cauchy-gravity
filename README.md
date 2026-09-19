@@ -1,7 +1,7 @@
 # Ryugu Cauchy Gravity
 
 <p align="center">
-  <a href="https://doi.org/10.5281/zenodo.22847806"><img alt="DOI" src="https://zenodo.org/badge/1371872339.svg"></a>
+  <a href="https://doi.org/10.5281/zenodo.22847806"><img alt="https://zenodo.org/badge/1371872339.svg" src="https://zenodo.org/badge/1371872339.svg"></a>
   <a href="https://github.com/Tom-Jim/ryugu-cauchy-gravity"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-source-181717?style=flat-square&logo=github&logoColor=white"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-000000?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://bevy.org/"><img alt="Bevy 0.19" src="https://img.shields.io/badge/Bevy-0.19-74c0fc?style=flat-square"></a>
