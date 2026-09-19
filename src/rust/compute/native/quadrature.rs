@@ -7,8 +7,12 @@
 //! icosahedral 12-point rule, resolves the logarithmic near-surface structure of
 //! the integrand.
 //!
-//! Measured against the ESA polyhedral record (24 faces, 1 mm standoff):
-//! 12 dirs → 18 % median, 72 → 7.6 %, 288 → 1.7 %, 800 → 1.4 %.
+//! Legacy ESA benchmark (24 faces, 1 mm standoff): 12 directions gave 18 %
+//! median residual, 72 gave 7.6 %, 288 gave 1.7 %, and 800 gave 1.4 %. These
+//! figures describe the old finite-part reference scene; they are retained as
+//! a direction-rule sanity check, not as a claim about the deployed Ryugu
+//! browser run. Current browser observations are recorded in
+//! `docs/online-test-data.md`.
 
 /// A node set: `(direction, solid-angle weight)` pairs. The buffer layout the
 /// compute shader consumes is exactly this, so the same slice feeds the CPU

@@ -33,14 +33,14 @@ const ANALYTIC_BLOCK_FACES: usize = 8192;
 /// storage-binding limits while worsening allocation spikes and UI latency.
 const RAY_BLOCK_FACES: usize = 512;
 const MASCON_BLOCK_FACES: usize = 4096;
-/// Opening angle of the Mascon Barnes-Hut walk. The observation surface sits
-/// 16 m above the mesh, i.e. inside the outer tree levels, so a coarse angle
-/// merges nodes that are barely separated from the observer: the historical
-/// 0.55 opened ~117 nodes per face and drifted up to 26 % low against the
-/// brute-force direct sum on near-surface faces.
-/// The native mirror in `src/rust/compute/native/mascon.rs` uses the same value;
-/// 0.1 holds the measured near-surface error near 0.10 % while keeping the full
-/// 196,608-face dispatch comfortably below the ray and Carlson costs.
+/// Opening angle of the Mascon Barnes-Hut walk. A smaller value retains more
+/// tree nodes near the observer and reduces voxel approximation error, at the
+/// cost of more point-mass work. The native mirror in
+/// `src/rust/compute/native/mascon.rs` deliberately uses the same value so
+/// native and browser records remain comparable. The deployed browser
+/// snapshot and its comparison caveats are recorded in
+/// `docs/online-test-data.md`; this tuning constant is not itself an accuracy
+/// guarantee.
 const MASCON_THETA: f32 = 0.1;
 const CHECKPOINT_BLOCKS: usize = 8;
 const MAX_INTERVALS: usize = 16;

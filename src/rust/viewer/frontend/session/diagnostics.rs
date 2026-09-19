@@ -3,6 +3,8 @@
 // normal RHGF record, the Bevy renderer, or the saved-result store.
 
 const DIAGNOSTIC_FACES: usize = 96;
+// Heights used by the exterior Laplace chart, ordered from far to near so the
+// log-scale plot reads left-to-right as the surface is approached.
 const CONSISTENCY_HEIGHTS_MM: [f64; 8] = [
     1_000_000.0,
     100_000.0,
@@ -13,6 +15,9 @@ const CONSISTENCY_HEIGHTS_MM: [f64; 8] = [
     3.0,
     1.0,
 ];
+// Heights used by the near-surface residual chart. This is intentionally a
+// complete geometric-ish sample of 10 m down to 1 mm, not a prefix of the
+// slider positions; the chart compares solver consistency at common heights.
 const STABILITY_HEIGHTS_MM: [f64; 6] = [10_000.0, 1_000.0, 300.0, 30.0, 3.0, 1.0];
 const SWEEP_THETA: [f64; 4] = [0.5, 0.25, 0.1, 0.05];
 const SWEEP_DIRECTIONS: [f64; 4] = [8.0, 16.0, 32.0, 64.0];

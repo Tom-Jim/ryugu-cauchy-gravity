@@ -1,8 +1,9 @@
 //! Validation-only density-jump model retained for regression comparisons.
 //!
-//! Production `Solver::Carlson` no longer uses this approximation. It builds a
-//! piecewise-constant density field as weighted jump surfaces for tests that
-//! quantify the old representation error against the continuous-density path.
+//! Production `Solver::Carlson` no longer uses this approximation. This module
+//! builds a piecewise-constant density field as weighted jump surfaces only for
+//! tests that quantify the legacy representation error against the
+//! continuous-density path; it must not be presented as the browser solver.
 //! The exact uniform term stays on the original mesh; a refined star-cone carries
 //! only the density deviation, which limits the error from Ryugu's concavity.
 

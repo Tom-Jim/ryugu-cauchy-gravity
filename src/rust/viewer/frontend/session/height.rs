@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Observation-surface height
 //
-// Two useful bands sit four orders of magnitude apart: the exact solvers
-// (Werner, RT-FP, Carlson) are still sharp at 1 mm, whereas mascon is a direct
-// sum over 5.253 m voxels and collapses there. A single linear track cannot
-// address both, so every algorithm is given the same two-segment vertical
-// slider:
+// The viewer needs both near-surface samples and metre-scale overview samples.
+// Mascon is a direct sum over roughly 5.2 m voxels, while the analytic and
+// finite-part paths resolve much smaller standoffs. A single linear track
+// would hide the low-height region, so every algorithm uses the same
+// two-segment vertical slider:
 //
 //   lower half (track 0…500)    →     1 mm …   500 mm
 //   upper half (track 500…1000) →   1 m    …    32 m
