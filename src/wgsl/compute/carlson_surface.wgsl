@@ -165,7 +165,7 @@ fn carlson_surface(
   workgroupBarrier();
   if (local.x == 0u && point_is_active) {
     for (var component = 0u; component < COMPONENTS; component += 1u) {
-      sums[component] += sums[COMPONENTS];
+      sums[component] += sums[COMPONENTS + component];
     }
   }
   workgroupBarrier();

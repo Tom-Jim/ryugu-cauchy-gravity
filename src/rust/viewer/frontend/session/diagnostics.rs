@@ -3,7 +3,7 @@
 // normal RHGF record, the Bevy renderer, or the saved-result store.
 
 const DIAGNOSTIC_FACES: usize = 96;
-const DIAGNOSTIC_HEIGHTS_MM: [f64; 8] = [
+const CONSISTENCY_HEIGHTS_MM: [f64; 8] = [
     1_000_000.0,
     100_000.0,
     10_000.0,
@@ -13,6 +13,7 @@ const DIAGNOSTIC_HEIGHTS_MM: [f64; 8] = [
     3.0,
     1.0,
 ];
+const STABILITY_HEIGHTS_MM: [f64; 6] = [10_000.0, 1_000.0, 300.0, 30.0, 3.0, 1.0];
 const SWEEP_THETA: [f64; 4] = [0.5, 0.25, 0.1, 0.05];
 const SWEEP_DIRECTIONS: [f64; 4] = [8.0, 16.0, 32.0, 64.0];
 // Each value selects a complete Gauss-Legendre rule.  A 12-point prefix of the
@@ -486,7 +487,7 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
         .into_iter()
         .filter(|solver| solver.algorithm != "werner")
         .collect();
-    let total = plotted.len() * DIAGNOSTIC_HEIGHTS_MM.len();
+    let total = plotted.len() * STABILITY_HEIGHTS_MM.len();
     let span = 100.0 / total.max(1) as f64;
     let mut series = Vec::new();
     let mut references: Vec<(&'static str, f64, DiagnosticTensor)> = Vec::new();
@@ -494,7 +495,7 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
     for solver in plotted {
         let reference_solver = solver_reference(solver);
         let mut points = Vec::new();
-        for height in DIAGNOSTIC_HEIGHTS_MM {
+        for height in STABILITY_HEIGHTS_MM {
             let reference = if let Some((_, _, tensor)) =
                 references.iter().find(|(density, cached_height, _)| {
                     *density == solver.density && *cached_height == height
@@ -549,13 +550,13 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
 
 async fn run_tensor_symmetry(core: &Rc<RefCell<Core>>) -> Result<(), String> {
     let solvers = diagnostic_solvers();
-    let total = solvers.len() * DIAGNOSTIC_HEIGHTS_MM.len();
+    let total = solvers.len() * CONSISTENCY_HEIGHTS_MM.len();
     let span = 100.0 / total.max(1) as f64;
     let mut series = Vec::new();
     let mut progress = 0usize;
     for solver in solvers {
         let mut points = Vec::new();
-        for height in DIAGNOSTIC_HEIGHTS_MM {
+        for height in CONSISTENCY_HEIGHTS_MM {
             let (tensor, _) = evaluate_tensor_sample(
                 core,
                 solver,
