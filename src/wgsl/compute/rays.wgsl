@@ -35,7 +35,9 @@ struct Globals {
 // Directions, xyz + quadrature weight.
 @group(0) @binding(6) var<storage, read> dirs: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read_write> out_counts: array<u32>;
-@group(0) @binding(8) var<storage, read_write> out_ivals: array<vec2<f32>>;
+// One vec4 per interval: (r0, r1, bitcast(entry_face), bitcast(exit_face)).
+// Face ids let the residual kernel differentiate each moving ray endpoint.
+@group(0) @binding(8) var<storage, read_write> out_ivals: array<vec4<f32>>;
 // One inside flag per point, followed by one atomic overflow counter at
 // index `n_points`. The counter catches both dropped crossings and intervals
 // that do not fit in `MAX_INTERVALS`, so the bake fails instead of silently
@@ -45,32 +47,41 @@ struct Globals {
 const MAX_HITS: u32 = 32u;
 const MAX_INTERVALS: u32 = 16u;
 const STACK: u32 = 64u;
+const INVALID_FACE: u32 = 0xffffffffu;
 
-/// Möller–Trumbore. Returns the crossing distance, or −1 when the ray misses.
-fn tri_hit(o: vec3<f32>, d: vec3<f32>, v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, t_lo: f32) -> f32 {
+/// Möller-Trumbore. Returns `(distance, merge_tolerance)`, or a negative
+/// distance when the ray misses.  The tolerance follows the conditioning of
+/// this particular hit instead of applying one world-space epsilon everywhere.
+fn tri_hit(o: vec3<f32>, d: vec3<f32>, v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, t_lo: f32) -> vec2<f32> {
     let e1 = v1 - v0;
     let e2 = v2 - v0;
     let pv = cross(d, e2);
     let det = dot(e1, pv);
-    if (abs(det) < 1e-16) {
-        return -1.0;
+    let double_area = length(cross(e1, e2));
+    if (double_area <= 0.0 || abs(det) <= 8.0 * 1.1920929e-7 * double_area) {
+        return vec2<f32>(-1.0, 0.0);
     }
     let inv = 1.0 / det;
     let tv = o - v0;
     let u = dot(tv, pv) * inv;
     if (u < 0.0 || u > 1.0) {
-        return -1.0;
+        return vec2<f32>(-1.0, 0.0);
     }
     let qv = cross(tv, e1);
     let v = dot(d, qv) * inv;
     if (v < 0.0 || u + v > 1.0) {
-        return -1.0;
+        return vec2<f32>(-1.0, 0.0);
     }
     let t = dot(e2, qv) * inv;
     if (t > t_lo) {
-        return t;
+        let edge_scale = max(max(length(e1), length(e2)), length(v2 - v1));
+        let coordinate_scale = max(max(length(o), abs(t)), max(edge_scale, 1.0));
+        let incidence = max(abs(det) / double_area, 0.05);
+        let ulp_bound = 4.0 * 1.1920929e-7 * coordinate_scale / incidence;
+        let local_cap = max(8.0 * 1.1920929e-7 * edge_scale, 1e-7);
+        return vec2<f32>(t, min(ulp_bound, local_cap));
     }
-    return -1.0;
+    return vec2<f32>(-1.0, 0.0);
 }
 
 fn axis_interval(lo: f32, hi: f32, origin: f32, direction: f32) -> vec2<f32> {
@@ -96,18 +107,31 @@ fn slab_hit(node: u32, o: vec3<f32>, d: vec3<f32>, t_lo: f32, t_hi: f32) -> bool
     return far >= near;
 }
 
-fn same_crossing(a: f32, b: f32) -> bool {
-    let scale = max(max(abs(a), abs(b)), 1.0);
-    return abs(a - b) <= max(1e-5, 8e-7 * scale);
+fn same_crossing(a: f32, a_tolerance: f32, b: f32, b_tolerance: f32) -> bool {
+    return abs(a - b) <= max(a_tolerance, b_tolerance);
 }
 
 /// Insert `t` into the ascending hit list, keeping at most `MAX_HITS`.
-fn insert_hit(hits: ptr<function, array<f32, MAX_HITS>>, n: ptr<function, u32>, t: f32) {
+fn insert_hit(
+    hits: ptr<function, array<f32, MAX_HITS>>,
+    tolerances: ptr<function, array<f32, MAX_HITS>>,
+    faces: ptr<function, array<u32, MAX_HITS>>,
+    n: ptr<function, u32>,
+    t: f32,
+    tolerance: f32,
+    face: u32,
+) {
     for (var j = 0u; j < *n; j = j + 1u) {
         // Adjacent triangles share an edge crossing. It is one boundary event,
         // not two intervals; retaining both corrupts parity and can erase the
         // following interior segment.
-        if (same_crossing((*hits)[j], t)) {
+        if (same_crossing((*hits)[j], (*tolerances)[j], t, tolerance)) {
+            // Preserve the better-conditioned incident face for the endpoint
+            // derivative; traversal order must not decide the residual.
+            if (tolerance < (*tolerances)[j]) {
+                (*faces)[j] = face;
+            }
+            (*tolerances)[j] = max((*tolerances)[j], tolerance);
             return;
         }
     }
@@ -126,9 +150,13 @@ fn insert_hit(hits: ptr<function, array<f32, MAX_HITS>>, n: ptr<function, u32>, 
             break;
         }
         (*hits)[i] = (*hits)[i - 1u];
+        (*tolerances)[i] = (*tolerances)[i - 1u];
+        (*faces)[i] = (*faces)[i - 1u];
         i = i - 1u;
     }
     (*hits)[i] = t;
+    (*tolerances)[i] = tolerance;
+    (*faces)[i] = face;
 }
 
 /// All triangle crossings of `o + t·d` with `t_min < t < t_max`, ascending.
@@ -136,6 +164,8 @@ fn trace(
     o: vec3<f32>,
     d: vec3<f32>,
     hits: ptr<function, array<f32, MAX_HITS>>,
+    tolerances: ptr<function, array<f32, MAX_HITS>>,
+    hit_faces: ptr<function, array<u32, MAX_HITS>>,
     n_hits: ptr<function, u32>,
 ) {
     *n_hits = 0u;
@@ -160,9 +190,9 @@ fn trace(
                 let v0 = positions[indices[f]].xyz;
                 let v1 = positions[indices[f + 1u]].xyz;
                 let v2 = positions[indices[f + 2u]].xyz;
-                let t = tri_hit(o, d, v0, v1, v2, g.t_min);
-                if (t > 0.0 && t < t_hi) {
-                    insert_hit(hits, n_hits, t);
+                let hit = tri_hit(o, d, v0, v1, v2, g.t_min);
+                if (hit.x > 0.0 && hit.x < t_hi) {
+                    insert_hit(hits, tolerances, hit_faces, n_hits, hit.x, hit.y, link.z + i);
                     if (*n_hits == MAX_HITS) {
                         t_hi = (*hits)[MAX_HITS - 1u];
                     }
@@ -194,12 +224,14 @@ fn inside_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var hits: array<f32, MAX_HITS>;
+    var tolerances: array<f32, MAX_HITS>;
+    var hit_faces: array<u32, MAX_HITS>;
     var n_hits: u32;
-    trace(points[pid].xyz, vec3<f32>(1.0, 0.0, 0.0), &hits, &n_hits);
+    trace(points[pid].xyz, vec3<f32>(1.0, 0.0, 0.0), &hits, &tolerances, &hit_faces, &n_hits);
     var votes = n_hits % 2u;
-    trace(points[pid].xyz, vec3<f32>(0.371, 0.542, 0.753), &hits, &n_hits);
+    trace(points[pid].xyz, vec3<f32>(0.371, 0.542, 0.753), &hits, &tolerances, &hit_faces, &n_hits);
     votes = votes + n_hits % 2u;
-    trace(points[pid].xyz, vec3<f32>(-0.613, 0.211, 0.761), &hits, &n_hits);
+    trace(points[pid].xyz, vec3<f32>(-0.613, 0.211, 0.761), &hits, &tolerances, &hit_faces, &n_hits);
     votes = votes + n_hits % 2u;
     atomicStore(&out_inside_overflow[pid], select(0u, 1u, votes >= 2u));
 }
@@ -215,15 +247,19 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
     let u = dirs[idx % g.n_dirs].xyz;
     let x = points[pid].xyz;
     var hits: array<f32, MAX_HITS>;
+    var tolerances: array<f32, MAX_HITS>;
+    var hit_faces: array<u32, MAX_HITS>;
     var n_hits: u32;
-    trace(x, -u, &hits, &n_hits);
+    trace(x, -u, &hits, &tolerances, &hit_faces, &n_hits);
 
     let inside = atomicLoad(&out_inside_overflow[pid]) == 1u;
     var slots: array<vec2<f32>, MAX_INTERVALS>;
+    var slot_faces: array<vec2<u32>, MAX_INTERVALS>;
     var count = 0u;
     if (inside) {
         if (n_hits > 0u) {
             slots[count] = vec2<f32>(0.0, hits[0]);
+            slot_faces[count] = vec2<u32>(INVALID_FACE, hit_faces[0]);
             count = count + 1u;
         }
         var i = 1u;
@@ -232,6 +268,7 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
             slots[count] = vec2<f32>(hits[i], hits[i + 1u]);
+            slot_faces[count] = vec2<u32>(hit_faces[i], hit_faces[i + 1u]);
             count = count + 1u;
             i = i + 2u;
         }
@@ -242,6 +279,7 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
             slots[count] = vec2<f32>(hits[i], hits[i + 1u]);
+            slot_faces[count] = vec2<u32>(hit_faces[i], hit_faces[i + 1u]);
             count = count + 1u;
             i = i + 2u;
         }
@@ -255,7 +293,12 @@ fn rays(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     out_counts[idx] = count;
     for (var k = 0u; k < MAX_INTERVALS; k = k + 1u) {
-        out_ivals[idx * MAX_INTERVALS + k] =
-            select(vec2<f32>(0.0, 0.0), slots[k], k < count);
+        if (k < count) {
+            out_ivals[idx * MAX_INTERVALS + k] = vec4<f32>(
+                slots[k], bitcast<f32>(slot_faces[k].x), bitcast<f32>(slot_faces[k].y),
+            );
+        } else {
+            out_ivals[idx * MAX_INTERVALS + k] = vec4<f32>(0.0);
+        }
     }
 }

@@ -11,8 +11,8 @@ impl GpuSolver {
         if constant {
             return self
                 .run_surface(
-                    "carlson_alpha_near",
-                    "carlson_alpha_near",
+                    "carlson_surface",
+                    "carlson_surface",
                     &pipeline_url(ASSET_GEOMETRY, &base_url),
                     FACE_MAGIC_WERNER,
                     &pipeline_url(ASSET_GEOMETRY, &base_url),
@@ -50,7 +50,7 @@ impl GpuSolver {
             end,
             height_mm,
             signal,
-            "carlson_alpha_near",
+            "rtfp_near",
             "carlson_alpha",
             "CarlsonAlpha",
             OutputMode::Scalar,
@@ -75,8 +75,8 @@ impl GpuSolver {
         if constant {
             return self
                 .run_surface(
-                    "carlson_alpha_near",
-                    "carlson_alpha_near",
+                    "carlson_surface",
+                    "carlson_surface",
                     &pipeline_url(ASSET_GEOMETRY, &base_url),
                     FACE_MAGIC_WERNER,
                     &pipeline_url(ASSET_GEOMETRY, &base_url),
@@ -96,7 +96,7 @@ impl GpuSolver {
             end,
             height_mm,
             signal,
-            "carlson_alpha_near",
+            "rtfp_near",
             "carlson_alpha",
             "CarlsonAlpha",
             OutputMode::Tensor,

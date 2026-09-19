@@ -147,6 +147,7 @@
     .diagnostic-legend { fill: var(--text); font-size: 11px; }
     .diagnostic-facet { fill: var(--cyan); font-size: 12px; font-weight: 750; }
     .diagnostic-path { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+    .diagnostic-point { stroke: rgba(7,16,29,.95); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
     .diagnostic-state {
       position: absolute; inset: 1rem; display: grid; place-items: center; pointer-events: none;
       color: var(--cyan); font-size: 12px; text-align: center; white-space: pre-line;
@@ -341,7 +342,7 @@
         <button class="diagnostic-btn" type="button" :disabled="diagnostics.busy"
                 @click="openDiagnostic('stability')">Near-surface stability</button>
         <button class="diagnostic-btn" type="button" :disabled="diagnostics.busy"
-                @click="openDiagnostic('symmetry')">Tensor symmetry</button>
+                @click="openDiagnostic('symmetry')">Exterior Laplace residual</button>
       </div>
     </div>
     <section id="diagnostic-modal" v-show="diagnostics.visible" role="dialog" aria-modal="true"
@@ -379,6 +380,11 @@
                     :y1="panel.inner.top" :y2="panel.height - panel.inner.bottom" />
               <path v-for="line in panel.paths" :key="`${panel.facet}-${line.name}`" class="diagnostic-path"
                     :d="line.path" :stroke="line.color" :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : line.dash === 'dashdot' ? '10 3 2 3' : line.dash === 'longdash' ? '10 4' : 'none'" />
+              <template v-for="line in panel.paths" :key="`points-${panel.facet}-${line.name}`">
+                <circle v-for="(point, pointIndex) in line.plottedPoints"
+                        :key="`point-${panel.facet}-${line.name}-${pointIndex}`"
+                        class="diagnostic-point" :cx="point.x" :cy="point.y" r="3" :fill="line.color" />
+              </template>
               <g v-for="(line, index) in panel.paths" :key="`legend-${panel.facet}-${line.name}`" :transform="`translate(${panel.offsetX + panel.inner.left + (index % 2) * (panel.width / 2 - 10)}, ${panel.inner.top - 42 + Math.floor(index / 2) * 18})`">
                 <line :x1="0" :x2="20" y1="0" y2="0" :stroke="line.color" class="diagnostic-path"
                       :stroke-dasharray="line.dash === 'dashed' ? '7 4' : line.dash === 'dotted' ? '2 4' : line.dash === 'dashdot' ? '10 3 2 3' : line.dash === 'longdash' ? '10 4' : 'none'" />

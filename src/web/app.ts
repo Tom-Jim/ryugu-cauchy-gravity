@@ -219,6 +219,10 @@ const diagnosticChart = computed(() => {
       paths: selected.map((series) => ({
         ...series,
         path: pathFor(series),
+        plottedPoints: series.points.filter(validPoint).map((point) => ({
+          x: x(point.x),
+          y: y(point.y),
+        })),
       })),
     };
   });
@@ -273,7 +277,7 @@ export function mountViewer() {
           if (!svg) return;
           const copy = svg.cloneNode(true) as SVGSVGElement;
           const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-          style.textContent = ".diagnostic-grid{stroke:rgba(140,233,255,.13);stroke-width:1}.diagnostic-axis{stroke:rgba(231,247,255,.65);stroke-width:1}.diagnostic-tick{fill:#8da7b8;font:10px monospace}.diagnostic-label,.diagnostic-legend{fill:#e7f7ff;font:11px monospace}.diagnostic-path{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}";
+          style.textContent = ".diagnostic-grid{stroke:rgba(140,233,255,.13);stroke-width:1}.diagnostic-axis{stroke:rgba(231,247,255,.65);stroke-width:1}.diagnostic-tick{fill:#8da7b8;font:10px monospace}.diagnostic-label,.diagnostic-legend{fill:#e7f7ff;font:11px monospace}.diagnostic-path{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.diagnostic-point{stroke:#07101d;stroke-width:1.25}";
           copy.prepend(style);
           const blob = new Blob([new XMLSerializer().serializeToString(copy)], { type: "image/svg+xml" });
           const url = URL.createObjectURL(blob);

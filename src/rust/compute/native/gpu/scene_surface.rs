@@ -21,12 +21,7 @@ impl Scene {
         lo: usize,
         hi: usize,
     ) -> Result<Vec<Sym6>, String> {
-        self.ray_analytic_tensors_block(
-            lo,
-            hi,
-            &self.carlson_alpha_near_pipeline,
-            "carlson_alpha_near_block",
-        )
+        self.rtfp_analytic_tensors_block(lo, hi)
     }
 
     fn ray_analytic_tensors_block(

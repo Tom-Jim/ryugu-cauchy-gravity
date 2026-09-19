@@ -5,8 +5,8 @@
 //! |----------------------------|--------------------|--------------------------------|
 //! | `src/wgsl/compute/werner.wgsl` | (point, face) | uniform-density tensor `W(x)` |
 //! | `src/wgsl/compute/rays.wgsl` | (point, direction) | visible intervals of `x − R u` |
-//! | `src/wgsl/compute/remainder.wgsl` | point | deviation quadrature `G Σω T Σw R_k` |
-//! | `src/wgsl/compute/carlson_alpha.wgsl` | point | general-α radial finite part |
+//! | `src/wgsl/compute/remainder.wgsl` | point workgroup | direct deviation quadrature |
+//! | `src/wgsl/compute/carlson_alpha.wgsl` | point workgroup | general-alpha hybrid residual |
 //!
 //! The Rust side only loads the mesh, builds the BVH (`bvh.rs`) and does scalar
 //! bookkeeping. WebGPU has no ray-tracing stage, so the traversal itself is
@@ -57,7 +57,6 @@ pub struct Device {
     inside_pipeline: wgpu::ComputePipeline,
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
-    carlson_alpha_near_pipeline: wgpu::ComputePipeline,
     carlson_surface_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
     carlson_alpha_pipeline: wgpu::ComputePipeline,
@@ -136,17 +135,6 @@ impl Device {
             ],
         });
         let analytic_pipeline = pipeline(&device, &analytic_layout, &analytic_module, "rtfp_near");
-        let carlson_alpha_near_module = shader(
-            &device,
-            "carlson_alpha_near",
-            include_str!("../../../wgsl/compute/carlson_alpha_near.wgsl"),
-        );
-        let carlson_alpha_near_pipeline = pipeline(
-            &device,
-            &analytic_layout,
-            &carlson_alpha_near_module,
-            "carlson_alpha_near",
-        );
         let carlson_surface_module = shader(
             &device,
             "carlson_surface",
@@ -174,15 +162,18 @@ impl Device {
                 storage(4, false),
                 storage(5, false),
                 storage(6, true),
+                storage(7, false),
+                storage(8, false),
             ],
         });
         let remainder_pipeline =
             pipeline(&device, &remainder_layout, &remainder_module, "remainder");
-        let carlson_alpha_module = shader(
-            &device,
-            "carlson_alpha",
-            include_str!("../../../wgsl/compute/carlson_alpha.wgsl"),
+        let carlson_library = include_str!("../../../wgsl/compute/carlson_symmetric.wgsl");
+        let carlson_alpha_source = format!(
+            "{carlson_library}\n{}",
+            include_str!("../../../wgsl/compute/carlson_alpha.wgsl")
         );
+        let carlson_alpha_module = shader(&device, "carlson_alpha", &carlson_alpha_source);
         let carlson_alpha_pipeline = pipeline(
             &device,
             &remainder_layout,
@@ -198,7 +189,6 @@ impl Device {
             inside_pipeline,
             rays_pipeline,
             analytic_pipeline,
-            carlson_alpha_near_pipeline,
             carlson_surface_pipeline,
             remainder_pipeline,
             carlson_alpha_pipeline,
@@ -284,7 +274,6 @@ pub struct Scene {
     inside_pipeline: wgpu::ComputePipeline,
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
-    carlson_alpha_near_pipeline: wgpu::ComputePipeline,
     carlson_surface_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
     carlson_alpha_pipeline: wgpu::ComputePipeline,

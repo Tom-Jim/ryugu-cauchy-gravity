@@ -6,11 +6,6 @@ fn sub(a: Vec3, b: Vec3) -> Vec3 {
 }
 
 #[inline]
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-#[inline]
 fn scale(a: Vec3, k: f64) -> Vec3 {
     [a[0] * k, a[1] * k, a[2] * k]
 }
@@ -38,20 +33,16 @@ struct Triangle {
     a: Vec3,
     b: Vec3,
     c: Vec3,
-    #[allow(dead_code)]
-    center: Vec3,
     normal: Vec3,
 }
 
 fn make_triangle(a: Vec3, b: Vec3, c: Vec3) -> Triangle {
-    let center = scale(add(add(a, b), c), 1.0 / 3.0);
     let raw_normal = cross(sub(b, a), sub(c, a));
     let length = norm(raw_normal).max(1e-20);
     Triangle {
         a,
         b,
         c,
-        center,
         normal: scale(raw_normal, 1.0 / length),
     }
 }

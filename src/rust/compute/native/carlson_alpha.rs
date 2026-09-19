@@ -1,7 +1,7 @@
 //! General-alpha radial finite part and the Carlson special-function backend.
 //!
-//! The legacy Carlson jump-surface solver is intentionally an `alpha = 1`
-//! representation. `CarlsonAlpha` supports the general rational Cauchy kernel
+//! `Carlson` uses the exact `alpha = 1` branch of this backend. `CarlsonAlpha`
+//! supports the general rational Cauchy kernel
 //!
 //! ```text
 //!   phi_k(x - R u) = (A R^2 - 2 B R + C)^(-alpha)
@@ -14,10 +14,13 @@
 //! ```
 //!
 //! The subtraction removes the finite-part logarithmic singularity, including
-//! when `a = 0`. The production bake evaluates the same formula with a
-//! fixed-order GPU rule; this module contains the f64 reference, the Carlson
-//! `R_F/R_D/R_J/R_C` library bridge used by the verification checks, and
-//! reduction identities for quartic boundary arcs.
+//! when `a = 0`. The production hybrid bake differentiates this scalar with
+//! respect to direction: alpha=1 uses the exact `R_C` endpoint-angle form,
+//! general alpha uses complete GL4/GL8/GL16 rules for the fixed-endpoint beta
+//! derivative, and mesh endpoint motion is analytic. This module contains the
+//! f64 scalar reference and the `R_F/R_D/R_J/R_C` library bridge. A physical
+//! non-degenerate quartic coefficient generator is intentionally not exposed:
+//! the production identity retains the spherical derivative residual instead.
 
 use crate::density::KernelSi;
 

@@ -68,8 +68,15 @@ impl ComputeEngine {
                     .await
                 }
                 "carlson" => {
-                    gpu.run_carlson_tensor(source_set == "constant", start, end, height_mm, &signal)
-                        .await
+                    gpu.run_carlson_tensor(
+                        source_set == "constant",
+                        start,
+                        end,
+                        height_mm,
+                        direction_limit,
+                        &signal,
+                    )
+                    .await
                 }
                 "carlsonalpha" => {
                     gpu.run_carlson_alpha_tensor(

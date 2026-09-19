@@ -52,20 +52,21 @@ impl GpuSolver {
         })
     }
 
-    fn shader_source(name: &str) -> Option<&'static str> {
+    fn shader_source(name: &str) -> Option<Cow<'static, str>> {
         match name {
-            "werner" => Some(SHADER_WERNER),
-            "rtfp_near" => Some(SHADER_RTFP_NEAR),
-            "carlson_surface" => Some(SHADER_CARLSON_SURFACE),
-            "carlson_alpha_near" => Some(SHADER_CARLSON_ALPHA_NEAR),
-            "rays" => Some(SHADER_RAYS),
-            "remainder" => Some(SHADER_REMAINDER),
-            "carlson_alpha" => Some(SHADER_CARLSON_ALPHA),
-            "observers" => Some(SHADER_OBSERVERS),
-            "tensor_scalar" => Some(SHADER_TENSOR_SCALAR),
-            "tensor_compose" => Some(SHADER_TENSOR_COMPOSE),
-            "mascon_tree" => Some(SHADER_MASCON_TREE),
-            "mascon_tensor" => Some(SHADER_MASCON_TENSOR),
+            "werner" => Some(Cow::Borrowed(SHADER_WERNER)),
+            "rtfp_near" => Some(Cow::Borrowed(SHADER_RTFP_NEAR)),
+            "carlson_surface" => Some(Cow::Borrowed(SHADER_CARLSON_SURFACE)),
+            "rays" => Some(Cow::Borrowed(SHADER_RAYS)),
+            "remainder" => Some(Cow::Borrowed(SHADER_REMAINDER)),
+            "carlson_alpha" => Some(Cow::Owned(format!(
+                "{SHADER_CARLSON_SYMMETRIC}\n{SHADER_CARLSON_ALPHA}"
+            ))),
+            "observers" => Some(Cow::Borrowed(SHADER_OBSERVERS)),
+            "tensor_scalar" => Some(Cow::Borrowed(SHADER_TENSOR_SCALAR)),
+            "tensor_compose" => Some(Cow::Borrowed(SHADER_TENSOR_COMPOSE)),
+            "mascon_tree" => Some(Cow::Borrowed(SHADER_MASCON_TREE)),
+            "mascon_tensor" => Some(Cow::Borrowed(SHADER_MASCON_TENSOR)),
             _ => None,
         }
     }
@@ -88,7 +89,7 @@ impl GpuSolver {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(code.into()),
+                source: wgpu::ShaderSource::Wgsl(code),
             });
         let pipeline = self
             .device
@@ -147,9 +148,8 @@ impl GpuSolver {
                     }
                     ASSET_CARLSON_CAUCHY => {
                         let density = self.density_text(CAUCHY_PATH).await?;
-                        source.carlson(Some(density.as_str()))?
+                        source.carlson_cauchy(density.as_str())?
                     }
-                    ASSET_CARLSON_CONSTANT => source.carlson(None)?,
                     ASSET_CARLSON_ALPHA => {
                         let density = self.density_text(ELLIPTIC_PATH).await?;
                         source.carlson_alpha(density.as_str())?

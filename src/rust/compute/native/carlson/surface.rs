@@ -38,20 +38,15 @@ pub fn star_faces(
             })
             .sum()
     };
-    let mut over_budget = false;
     while estimate(tol) > refine.face_budget as f64 {
         if tol >= 1.0 {
-            over_budget = true;
             break;
         }
         tol *= 1.5;
     }
 
     let mut faces: Vec<Face> = Vec::new();
-    let mut max_jump: f64 = 0.0;
-    let mut min_jump = f64::INFINITY;
     let mut slabs_total = 0usize;
-    let mut max_slabs_used = 0usize;
     let mut worst_variation = 0.0f64;
     let scale = rho_ref.abs().max(f64::MIN_POSITIVE);
 
@@ -61,7 +56,6 @@ pub fn star_faces(
         let slab_count = slabs_for(variation[index], tol, refine.max_slabs, rho_ref);
         let bounds = slab_boundaries(&profile, slab_count);
         slabs_total += slab_count;
-        max_slabs_used = max_slabs_used.max(slab_count);
 
         let mut lo = 0.0f64;
         for (slab, hi) in bounds.iter().copied().enumerate() {
@@ -69,8 +63,6 @@ pub fn star_faces(
             let (min_density, max_density) = slab_range(&profile, lo, hi);
             worst_variation = worst_variation.max((max_density - min_density) / scale);
             let jump = rho_slab - rho_ref;
-            max_jump = max_jump.max(jump.abs());
-            min_jump = min_jump.min(jump.abs());
 
             let centre = frustum_centre(origin, *tri, lo, hi);
             for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
@@ -100,27 +92,18 @@ pub fn star_faces(
                 centre,
                 cap,
             );
-            max_jump = max_jump.max(cap.abs());
-            min_jump = min_jump.min(cap.abs());
             lo = hi;
         }
     }
 
     let stats = CarlsonStats {
-        origin,
-        rho_ref,
         covered_volume: covered,
         signed_volume: signed,
         mesh_volume: mass::body_volume(mesh),
         n_faces: faces.len(),
         n_mesh_faces: 0,
-        max_jump,
-        min_jump: if min_jump.is_finite() { min_jump } else { 0.0 },
         slabs: slabs_total,
-        max_slabs_used,
-        tol,
         worst_slab_variation: worst_variation,
-        over_budget,
     };
     (faces, stats)
 }

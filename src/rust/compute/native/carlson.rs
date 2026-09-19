@@ -1,7 +1,8 @@
-//! Carlson density-jump surface solver.
+//! Validation-only density-jump model retained for regression comparisons.
 //!
-//! This path is independent from RT-FP: it builds a piecewise-constant density
-//! field as weighted jump surfaces and evaluates one analytic surface integral.
+//! Production `Solver::Carlson` no longer uses this approximation. It builds a
+//! piecewise-constant density field as weighted jump surfaces for tests that
+//! quantify the old representation error against the continuous-density path.
 //! The exact uniform term stays on the original mesh; a refined star-cone carries
 //! only the density deviation, which limits the error from Ryugu's concavity.
 
@@ -36,20 +37,13 @@ impl Default for Refine {
 /// Diagnostics from building the jump-surface list.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CarlsonStats {
-    pub origin: [f64; 3],
-    pub rho_ref: f64,
     pub covered_volume: f64,
     pub signed_volume: f64,
     pub mesh_volume: f64,
     pub n_faces: usize,
     pub n_mesh_faces: usize,
-    pub max_jump: f64,
-    pub min_jump: f64,
     pub slabs: usize,
-    pub max_slabs_used: usize,
-    pub tol: f64,
     pub worst_slab_variation: f64,
-    pub over_budget: bool,
 }
 
 impl CarlsonStats {

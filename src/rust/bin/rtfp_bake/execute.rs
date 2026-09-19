@@ -1,6 +1,7 @@
 #[derive(Clone, Copy)]
 enum RayAlgorithm {
     Rtfp,
+    Carlson,
     CarlsonAlpha,
 }
 
@@ -10,6 +11,10 @@ fn run_rtfp(args: &Args) -> Result<(), String> {
 
 fn run_carlson_alpha(args: &Args) -> Result<(), String> {
     run_ray_algorithm(args, RayAlgorithm::CarlsonAlpha)
+}
+
+fn run_carlson(args: &Args) -> Result<(), String> {
+    run_ray_algorithm(args, RayAlgorithm::Carlson)
 }
 
 fn run_ray_algorithm(args: &Args, algorithm: RayAlgorithm) -> Result<(), String> {
@@ -22,10 +27,10 @@ fn run_ray_algorithm(args: &Args, algorithm: RayAlgorithm) -> Result<(), String>
     println!("mesh: {nv} vertices, {nf} faces (meters)");
     println!(
         "solver={} mode={:?} directions={}",
-        if matches!(algorithm, RayAlgorithm::CarlsonAlpha) {
-            "carlson-alpha"
-        } else {
-            "rtfp"
+        match algorithm {
+            RayAlgorithm::Rtfp => "rtfp",
+            RayAlgorithm::Carlson => "carlson",
+            RayAlgorithm::CarlsonAlpha => "carlson-alpha",
         },
         args.mode,
         args.directions
@@ -137,7 +142,7 @@ fn run_ray_algorithm(args: &Args, algorithm: RayAlgorithm) -> Result<(), String>
                     scene.rtfp_analytic_tensors_block(lo, hi)?,
                     scene.block_remainder(&points[lo..hi], &dirs, kernels, t_max, t_min)?,
                 ),
-                RayAlgorithm::CarlsonAlpha => (
+                RayAlgorithm::Carlson | RayAlgorithm::CarlsonAlpha => (
                     scene.carlson_alpha_analytic_tensors_block(lo, hi)?,
                     scene.block_carlson_alpha(&points[lo..hi], &dirs, kernels, t_max, t_min)?,
                 ),
@@ -245,141 +250,4 @@ fn write_face_record(
         record.s_max
     );
     Ok(())
-}
-
-/// Carlson density-jump solver: one analytic pass over the star-cone jump
-/// surfaces, no rays and no directional quadrature.
-fn run_carlson(args: &Args) -> Result<(), String> {
-    let standoff_m = args.standoff_mm * 1e-3;
-    let mesh =
-        Mesh::load_glb(&args.mesh, KM_TO_M).map_err(|e| format!("{}: {e}", args.mesh.display()))?;
-    let nv = mesh.vertex_count();
-    let nf = mesh.face_count();
-    println!("solver=carlson (density-jump surface integral, no ray tracing)");
-    println!("observation standoff: {:.3} mm", args.standoff_mm);
-    println!("mesh: {nv} vertices, {nf} faces (meters)");
-    println!("mode={:?}", args.mode);
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-
-    let points = mesh.observation_points(standoff_m);
-    let density = match args.mode {
-        DensityMode::Cauchy => Density::from_toml(&args.density, &mesh, args.normalize)?,
-        DensityMode::Constant => Density::homogeneous(1190.0, &mesh),
-        DensityMode::Elliptic => {
-            return Err("mode=elliptic requires --solver carlson-alpha".into());
-        }
-    };
-    print_mass_report(&density, args.mode);
-
-    let (faces, stats) = carlson::face_list(&mesh, &density, args.mode);
-    println!(
-        "jump surfaces: {} triangles = {nf} mesh (weight ρ_ref) + {} star-cone (weight ρ_f − ρ_ref)",
-        faces.len(),
-        stats.n_faces
-    );
-    println!(
-        "  star cone from [{:.3}, {:.3}, {:.3}] m, ρ_ref = {:.6e} kg/m³",
-        stats.origin[0], stats.origin[1], stats.origin[2], stats.rho_ref
-    );
-    println!(
-        "  cone coverage {:.5} % of the mesh volume {:.6e} m³, |signed|/covered {:.6} \
-         (below 1 ⇒ not star-shaped; the split keeps that defect off the constant term)",
-        100.0 * stats.coverage(),
-        stats.mesh_volume,
-        stats.signed_ratio()
-    );
-    println!(
-        "  |ρ_f − ρ_ref| range {:.6e} .. {:.6e} kg/m³ ({:.3e} of ρ_ref)",
-        stats.min_jump,
-        stats.max_jump,
-        (stats.max_jump - stats.min_jump) / stats.rho_ref.abs().max(1e-300)
-    );
-    println!(
-        "  radial refinement: {} slabs (max {} per cone), requested tolerance {:.1e}, \
-         worst within-slab variation {:.3e} of ρ_ref{}",
-        stats.slabs,
-        stats.max_slabs_used,
-        stats.tol,
-        stats.worst_slab_variation,
-        if stats.over_budget {
-            " [face budget reached]"
-        } else {
-            ""
-        }
-    );
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-
-    // The analytic pass needs the mesh and BVH buffers on the device, but none of
-    // the ray/remainder state is ever dispatched from here.
-    let bvh = bvh::Bvh::build(&mesh);
-    let dirs = quadrature::directions(8);
-    let device = gpu::Device::new()?;
-    let scene = gpu::Scene::new(
-        device,
-        &mesh,
-        &bvh,
-        &faces,
-        &points,
-        &dirs,
-        POINTS_PER_BLOCK,
-        0,
-    );
-    println!(
-        "evaluating {nv} vertices × {} faces on the GPU",
-        faces.len()
-    );
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-    let mut vertex_h = vec![[f64::NAN; 6]; nv];
-    let resumed_vertices = if args.resume {
-        match checkpoint::load(&args.checkpoint, nv, args.standoff_mm)
-            .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?
-        {
-            Some(saved) => {
-                let count = saved.len();
-                vertex_h[..count].copy_from_slice(&saved);
-                println!("RESUME from {count} / {nv} vertex tensors");
-                count
-            }
-            None => 0,
-        }
-    } else {
-        0
-    };
-    for (block, lo) in (0..nv).step_by(POINTS_PER_BLOCK).enumerate() {
-        let hi = (lo + POINTS_PER_BLOCK).min(nv);
-        if hi <= resumed_vertices {
-            println!("PROGRESS_R {hi} {nv}");
-            continue;
-        }
-        scene.carlson_surface_block(lo, hi, &mut vertex_h)?;
-        if (block + 1) % CHECKPOINT_BLOCKS == 0 || hi == nv {
-            checkpoint::save(&args.checkpoint, &vertex_h, hi, args.standoff_mm)
-                .map_err(|e| format!("{}: {e}", args.checkpoint.display()))?;
-        }
-        println!("PROGRESS_R {hi} {nv}");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    if let Some(bad) = vertex_h.iter().flatten().find(|v| !v.is_finite()) {
-        return Err(format!(
-            "carlson tensor produced a non-finite component ({bad})"
-        ));
-    }
-
-    let record = if args.resume {
-        let existing = record::Record::open_resume(&args.out, nf)
-            .map_err(|e| format!("{}: {e}", args.out.display()))?;
-        match existing {
-            Some(r) if (r.standoff_mm - args.standoff_mm as f32).abs() < 1e-3 => {
-                println!("RESUME from {} / {} faces", r.n_done, nf);
-                r
-            }
-            _ => record::Record::create(&args.out, nf, args.standoff_mm as f32)
-                .map_err(|e| format!("{}: {e}", args.out.display()))?,
-        }
-    } else {
-        record::Record::create(&args.out, nf, args.standoff_mm as f32)
-            .map_err(|e| format!("{}: {e}", args.out.display()))?
-    };
-    write_face_record(args, &mesh, &vertex_h, record)
 }

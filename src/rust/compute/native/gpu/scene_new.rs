@@ -20,7 +20,6 @@ impl Scene {
             inside_pipeline,
             rays_pipeline,
             analytic_pipeline,
-            carlson_alpha_near_pipeline,
             carlson_surface_pipeline,
             remainder_pipeline,
             carlson_alpha_pipeline,
@@ -60,7 +59,7 @@ impl Scene {
         let ivals = storage_buffer(
             &device,
             "ivals",
-            block_capacity * n_dirs * MAX_INTERVALS * 8,
+            block_capacity * n_dirs * MAX_INTERVALS * 16,
         );
         // The final word is an atomic overflow counter shared by both ray entry
         // points. Keeping it in this buffer avoids adding another storage binding.
@@ -69,7 +68,9 @@ impl Scene {
         let rem_out = storage_buffer(&device, "rem_out", block_capacity * 6 * 4);
         let rays_globals = uniform_buffer(&device, "rays_globals", 32);
         let analytic_globals = uniform_buffer(&device, "analytic_globals", 32);
-        let remainder_globals = uniform_buffer(&device, "remainder_globals", 16);
+        // CarlsonAlpha has one additional u32 quadrature-order field. A larger
+        // binding remains valid for the four-field RT-FP globals as well.
+        let remainder_globals = uniform_buffer(&device, "remainder_globals", 32);
 
         fn entry<'a>(binding: u32, buffer: &'a wgpu::Buffer) -> wgpu::BindGroupEntry<'a> {
             wgpu::BindGroupEntry {
@@ -114,6 +115,8 @@ impl Scene {
                 entry(4, &kernels),
                 entry(5, &dirs_buf),
                 entry(6, &rem_out),
+                entry(7, &positions),
+                entry(8, &indices),
             ],
         });
 
@@ -138,7 +141,6 @@ impl Scene {
             inside_pipeline,
             rays_pipeline,
             analytic_pipeline,
-            carlson_alpha_near_pipeline,
             carlson_surface_pipeline,
             remainder_pipeline,
             carlson_alpha_pipeline,

@@ -7,7 +7,8 @@
 //! JavaScript: the shaders are embedded at compile time and every dispatch,
 //! buffer copy and readback is issued through `wgpu`.
 
-use super::source::RuntimeSource;
+use super::source::{RuntimeSource, quadrature_directions};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -26,9 +27,11 @@ const ANALYTIC_BLOCK_FACES: usize = 8192;
 /// Faces per dispatch block. Each block is one upload/dispatch/readback round
 /// trip, so a larger block directly cuts the sequential round-trip count. The
 /// ray path is the constraint: its interval buffer is
-/// `faces * directions * MAX_INTERVALS * 8` bytes, which stays well under the
-/// WebGPU default storage-binding limit at 1024 faces.
-const RAY_BLOCK_FACES: usize = 1024;
+/// `faces * directions * MAX_INTERVALS * 16` bytes, including two endpoint
+/// face ids per interval. At 288 directions a 512-face block uses 36 MiB for
+/// intervals; 1024 faces would use 72 MiB and exceed common 64 MiB WebGPU
+/// storage-binding limits while worsening allocation spikes and UI latency.
+const RAY_BLOCK_FACES: usize = 512;
 const MASCON_BLOCK_FACES: usize = 4096;
 /// Opening angle of the Mascon Barnes-Hut walk. The observation surface sits
 /// 16 m above the mesh, i.e. inside the outer tree levels, so a coarse angle
@@ -51,8 +54,7 @@ const SHADER_MASCON_TENSOR: &str = include_str!("../../../wgsl/compute/mascon_te
 const SHADER_WERNER: &str = include_str!("../../../wgsl/compute/werner.wgsl");
 const SHADER_RTFP_NEAR: &str = include_str!("../../../wgsl/compute/rtfp_near.wgsl");
 const SHADER_CARLSON_SURFACE: &str = include_str!("../../../wgsl/compute/carlson_surface.wgsl");
-const SHADER_CARLSON_ALPHA_NEAR: &str =
-    include_str!("../../../wgsl/compute/carlson_alpha_near.wgsl");
+const SHADER_CARLSON_SYMMETRIC: &str = include_str!("../../../wgsl/compute/carlson_symmetric.wgsl");
 const SHADER_RAYS: &str = include_str!("../../../wgsl/compute/rays.wgsl");
 const SHADER_REMAINDER: &str = include_str!("../../../wgsl/compute/remainder.wgsl");
 const SHADER_CARLSON_ALPHA: &str = include_str!("../../../wgsl/compute/carlson_alpha.wgsl");
@@ -66,11 +68,9 @@ const ASSET_MASCON_TREE: &str = "runtime:mascon-tree";
 const ASSET_MASCON: &str = "runtime:mascon-points";
 const ASSET_RTFP: &str = "runtime:rtfp";
 const ASSET_CARLSON_CAUCHY: &str = "runtime:carlson-cauchy";
-const ASSET_CARLSON_CONSTANT: &str = "runtime:carlson-constant";
 const ASSET_CARLSON_ALPHA: &str = "runtime:carlson-alpha";
 
 const FACE_MAGIC_WERNER: u32 = 0x3152_5752;
-const FACE_MAGIC_CARLSON: u32 = 0x3143_5952;
 
 include!("interop.rs");
 include!("record.rs");

@@ -36,7 +36,7 @@ fn point_grid(points: usize) -> (u32, u32) {
 
 fn block_size(algorithm: &str) -> usize {
     match algorithm {
-        "rtfp" | "carlsonalpha" => RAY_BLOCK_FACES,
+        "rtfp" | "carlson" | "carlsonalpha" => RAY_BLOCK_FACES,
         "mascon" => MASCON_BLOCK_FACES,
         _ => ANALYTIC_BLOCK_FACES,
     }

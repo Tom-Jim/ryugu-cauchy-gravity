@@ -22,7 +22,7 @@ const PI: f64 = std::f64::consts::PI;
 include!("model.rs");
 include!("density.rs");
 include!("inside.rs");
-include!("carlson.rs");
+include!("binary.rs");
 include!("mascon_grid.rs");
 include!("mesh_pipeline.rs");
 include!("mascon_tree.rs");
@@ -50,30 +50,19 @@ impl RuntimeSource {
         let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
         let kernels =
             normalize_kernels(&self.triangles, &density.kernels, density.total_mass_target)?;
-        Ok(build_mesh_pipeline(&self.triangles, &kernels))
+        build_mesh_pipeline(&self.triangles, &kernels)
     }
 
-    pub fn carlson(&self, cauchy_toml: Option<&str>) -> Result<Vec<u8>, String> {
-        let (kernels, mode) = match cauchy_toml {
-            Some(text) => {
-                let density = parse_density_text(text, "cauchy.toml")?;
-                (
-                    normalize_kernels(
-                        &self.triangles,
-                        &density.kernels,
-                        density.total_mass_target,
-                    )?,
-                    CarlsonMode::Cauchy,
-                )
-            }
-            None => (Vec::new(), CarlsonMode::Constant),
-        };
-        build_carlson_faces(&self.triangles, &kernels, mode, CONSTANT_DENSITY)
+    pub fn carlson_cauchy(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
+        let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
+        let kernels =
+            normalize_kernels(&self.triangles, &density.kernels, density.total_mass_target)?;
+        build_mesh_pipeline(&self.triangles, &kernels)
     }
 
     pub fn carlson_alpha(&self, elliptic_toml: &str) -> Result<Vec<u8>, String> {
         let density = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
-        Ok(build_mesh_pipeline(&self.triangles, &density.kernels))
+        build_mesh_pipeline(&self.triangles, &density.kernels)
     }
 
     pub fn mascon(

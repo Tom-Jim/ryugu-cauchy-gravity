@@ -22,7 +22,7 @@ impl Scene {
         )
     }
 
-    /// General-alpha radial finite part for the CarlsonAlpha solver.
+    /// General-alpha hybrid spherical residual for Carlson/CarlsonAlpha.
     pub fn block_carlson_alpha(
         &self,
         points: &[[f64; 3]],
@@ -90,11 +90,12 @@ impl Scene {
         self.queue
             .write_buffer(&self.rays_globals, 0, &rays_globals);
 
-        let mut rem_globals = [0u8; 16];
+        let mut rem_globals = [0u8; 20];
         rem_globals[0..4].copy_from_slice(&(n as u32).to_le_bytes());
         rem_globals[4..8].copy_from_slice(&(dirs.len() as u32).to_le_bytes());
         rem_globals[8..12].copy_from_slice(&(kernels.len() as u32).to_le_bytes());
         rem_globals[12..16].copy_from_slice(&(G as f32).to_le_bytes());
+        rem_globals[16..20].copy_from_slice(&16u32.to_le_bytes());
         self.queue
             .write_buffer(&self.remainder_globals, 0, &rem_globals);
 
@@ -116,7 +117,7 @@ impl Scene {
             let mut pass = enc.begin_compute_pass(&compute_pass(label));
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.remainder_bind, &[]);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups(n as u32, 1, 1);
         }
         enc.copy_buffer_to_buffer(&self.rem_out, 0, &self.readback, 0, (n * 24) as u64);
         enc.copy_buffer_to_buffer(

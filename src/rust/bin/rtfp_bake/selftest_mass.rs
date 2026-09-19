@@ -12,6 +12,7 @@ fn body_radius(mesh: &Mesh) -> f64 {
 /// rather than buried inside a face-by-face comparison.
 fn print_mass_report(density: &Density, mode: DensityMode) {
     let m = &density.mass;
+    let d = density.decomposition;
     println!(
         "mass integral (divergence theorem): body volume {:.6e} m³",
         m.volume
@@ -38,6 +39,10 @@ fn print_mass_report(density: &Density, mode: DensityMode) {
                     100.0 * (m.scale_vs_rho0() - 1.0)
                 );
             }
+            println!(
+                "  alpha→1 decomposition: {} → {} kernels, max peak-relative error {:.3e}",
+                d.original_kernels, d.expanded_kernels, d.max_peak_error
+            );
         }
         DensityMode::Elliptic => println!(
             "  general-alpha field: original exponents preserved, normalization={:?}, weight scale ×{:.9e}",

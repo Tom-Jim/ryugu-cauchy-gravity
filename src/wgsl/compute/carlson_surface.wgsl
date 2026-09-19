@@ -1,10 +1,10 @@
-// Carlson density-jump surface pipeline.
+// Carlson uniform-density boundary pipeline.
 //
-// The solver represents a piecewise-constant density field by its jump
-// surfaces. Every triangle carries its own density jump, so the tensor is one
-// direct boundary integral:
+// Every triangle carries a unit surface weight.  The physical constant density
+// is applied once by the dispatch scale, so the tensor is one direct boundary
+// integral:
 //
-//   H_ij(x) = G sum_T d_rho_T n_j(T) I_T[i](x)
+//   H_ij(x) = G rho sum_T n_j(T) I_T[i](x)
 //
 // This dispatch shares no compute pipeline with RT-FP. In particular it does
 // not read the RT-FP radial remainder or execute the ray traversal. The mesh
@@ -38,8 +38,17 @@ fn signed_solid_angle(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) -> f32 {
 }
 
 fn stable_asinh(x: f32) -> f32 {
-  let ax = abs(x);
-  return sign(x) * log(max(ax + sqrt(ax * ax + 1.0), 1e-30));
+  let a = abs(x);
+  var value = 0.0;
+  if (a < 0.01) {
+    let a2 = a * a;
+    value = a * (1.0 + a2 * (-0.1666666667 + 0.075 * a2));
+  } else if (a > 4096.0) {
+    value = log(a) + 0.6931471805599453;
+  } else {
+    value = log(a + sqrt(1.0 + a * a));
+  }
+  return select(-value, value, x >= 0.0);
 }
 
 fn edge_log_integral(
@@ -99,14 +108,17 @@ fn carlson_surface(
   for (var face = local.x; face < globals.n_faces; face += WG) {
     let row = 4u * face;
     let normal = triangles[row + 3u].xyz;
-    let jump = triangles[row + 3u].w;
+    let weight = triangles[row + 3u].w;
     let flux = triangle_flux(face, observer);
-    accumulated[0] += jump * normal.x * flux.x;
-    accumulated[1] += jump * normal.y * flux.y;
-    accumulated[2] += jump * normal.z * flux.z;
-    accumulated[3] += jump * normal.x * flux.y;
-    accumulated[4] += jump * normal.x * flux.z;
-    accumulated[5] += jump * normal.y * flux.z;
+    accumulated[0] += weight * normal.x * flux.x;
+    accumulated[1] += weight * normal.y * flux.y;
+    accumulated[2] += weight * normal.z * flux.z;
+    // The continuum sum is symmetric, but each individual face contribution
+    // need not be. Accumulate the symmetric projection before reduction so a
+    // different summation order cannot leave a hidden H_ij/H_ji discrepancy.
+    accumulated[3] += 0.5 * weight * (normal.x * flux.y + normal.y * flux.x);
+    accumulated[4] += 0.5 * weight * (normal.x * flux.z + normal.z * flux.x);
+    accumulated[5] += 0.5 * weight * (normal.y * flux.z + normal.z * flux.y);
   }
 
   for (var component = 0u; component < COMPONENTS; component += 1u) {

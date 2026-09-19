@@ -82,19 +82,19 @@ fn algo_title(spec: &Algo, mode: &str, selectable: bool) -> String {
         }
         "Carlson" => {
             if mode == "constant" {
-                "Carlson · uniform density · jump-surface surface integral".to_string()
+                "Carlson · uniform density · exact polyhedral boundary".to_string()
             } else {
                 format!(
-                    "Carlson · {} density · jump-surface surface integral",
+                    "Carlson · {} density · Carlson radial residual",
                     density_label(mode)
                 )
             }
         }
         _ => {
             if mode == "constant" {
-                "CarlsonAlpha · uniform density · GPU radial finite part".to_string()
+                "CarlsonAlpha · uniform density · exact polyhedral boundary".to_string()
             } else {
-                "CarlsonAlpha · general-α Cauchy · GPU radial finite part".to_string()
+                "CarlsonAlpha · general-α Cauchy · Carlson radial residual".to_string()
             }
         }
     }

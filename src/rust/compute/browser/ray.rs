@@ -41,10 +41,25 @@ impl GpuSolver {
         self.mesh_buffers(asset_url).await?;
         let key = format!("{asset_url}:mesh");
         let data = self.mesh_buffers[&key].clone();
-        let dir_count = data
-            .layout
-            .dir_count
-            .min(direction_limit.unwrap_or(data.layout.dir_count).max(1));
+        // A prefix of a tensor-product spherical rule is not itself a spherical
+        // rule: its weights do not sum to 4pi and its second tensor moment is
+        // biased.  Diagnostic refinements therefore build a complete rule of
+        // the requested size instead of truncating the production table.
+        let direction_override =
+            direction_limit.map(|requested| quadrature_directions(requested.max(8)));
+        let direction_bytes = direction_override.as_ref().map(|directions| {
+            directions
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<u8>>()
+        });
+        let direction_buffer = direction_bytes
+            .as_ref()
+            .map(|bytes| self.storage_buffer("diagnostic spherical rule", bytes));
+        let directions = direction_buffer.as_ref().unwrap_or(&data.directions);
+        let dir_count = direction_override
+            .as_ref()
+            .map_or(data.layout.dir_count, |values| values.len() / 4);
         let face_count = data.layout.face_count;
         let kernel_count = data.layout.kernel_count;
         let count = end - start;
@@ -104,7 +119,7 @@ impl GpuSolver {
         });
         let intervals = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ray intervals"),
-            size: (count * dir_count * MAX_INTERVALS * 8) as u64,
+            size: (count * dir_count * MAX_INTERVALS * 16) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -121,7 +136,7 @@ impl GpuSolver {
         // Only the per-point inside flag plus its atomic overflow counter must
         // start at zero, because `inside_probe` stores the flag and the trace
         // path accumulates the overflow counter. Clearing the interval buffer
-        // cost a ~19 MB allocation and upload on every block.
+        // cost a tens-of-megabytes allocation and upload on every full block.
         self.queue
             .write_buffer(&inside, 0, &vec![0u8; (count + 1) * 4]);
         let mut ray_globals = [0u8; 32];
@@ -164,7 +179,7 @@ impl GpuSolver {
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
-                    resource: data.directions.as_entire_binding(),
+                    resource: directions.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
@@ -228,7 +243,9 @@ impl GpuSolver {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let mut remainder_globals = [0u8; 20];
+        // Keep the uniform binding at a 16-byte multiple. CarlsonAlpha uses the
+        // fifth word; RT-FP reads only the common first four words.
+        let mut remainder_globals = [0u8; 32];
         set_u32(&mut remainder_globals, 0, count as u32);
         set_u32(&mut remainder_globals, 4, dir_count as u32);
         set_u32(&mut remainder_globals, 8, kernel_count as u32);
@@ -239,39 +256,52 @@ impl GpuSolver {
             quadrature_limit.unwrap_or(16).clamp(1, 16) as u32,
         );
         let remainder_global_buffer = self.storage_buffer("remainder globals", &remainder_globals);
+        let mut remainder_entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: remainder_global_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: intervals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: counts.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: points.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: data.kernels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: directions.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: remainder_output.as_entire_binding(),
+            },
+        ];
+        if remainder_shader == "carlson_alpha" {
+            remainder_entries.extend([
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: data.positions.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: data.indices.as_entire_binding(),
+                },
+            ]);
+        }
         let remainder_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("remainder"),
             layout: &remainder_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: remainder_global_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: intervals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: counts.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: points.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: data.kernels.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: data.directions.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: remainder_output.as_entire_binding(),
-                },
-            ],
+            entries: &remainder_entries,
         });
         let scalar_output = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ray face scalars"),
@@ -388,6 +418,9 @@ impl GpuSolver {
             if let Some(buffer) = tensor_output.as_ref() {
                 buffer.destroy();
             }
+            if let Some(buffer) = direction_buffer.as_ref() {
+                buffer.destroy();
+            }
             return Ok(None);
         }
 
@@ -420,7 +453,7 @@ impl GpuSolver {
                 3 => {
                     pass.set_pipeline(&remainder_pipeline);
                     pass.set_bind_group(0, &remainder_bind, &[]);
-                    pass.dispatch_workgroups(count.div_ceil(64) as u32, 1, 1);
+                    pass.dispatch_workgroups(count as u32, 1, 1);
                 }
                 _ => {
                     if let (Some(tensor_pipeline), Some(tensor_bind)) =
@@ -483,6 +516,9 @@ impl GpuSolver {
             buffer.destroy();
         }
         if let Some(buffer) = tensor_output.as_ref() {
+            buffer.destroy();
+        }
+        if let Some(buffer) = direction_buffer.as_ref() {
             buffer.destroy();
         }
         let raw = raw?;

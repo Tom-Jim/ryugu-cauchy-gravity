@@ -3,10 +3,21 @@
 // normal RHGF record, the Bevy renderer, or the saved-result store.
 
 const DIAGNOSTIC_FACES: usize = 96;
-const DIAGNOSTIC_HEIGHTS_MM: [f64; 5] = [1_000_000.0, 100_000.0, 10_000.0, 1_000.0, 1.0];
+const DIAGNOSTIC_HEIGHTS_MM: [f64; 8] = [
+    1_000_000.0,
+    100_000.0,
+    10_000.0,
+    1_000.0,
+    300.0,
+    30.0,
+    3.0,
+    1.0,
+];
 const SWEEP_THETA: [f64; 4] = [0.5, 0.25, 0.1, 0.05];
 const SWEEP_DIRECTIONS: [f64; 4] = [8.0, 16.0, 32.0, 64.0];
-const SWEEP_QUADRATURE: [f64; 4] = [4.0, 8.0, 12.0, 16.0];
+// Each value selects a complete Gauss-Legendre rule.  A 12-point prefix of the
+// GL16 table is not a quadrature rule and produced a misleading sweep.
+const SWEEP_QUADRATURE: [f64; 3] = [4.0, 8.0, 16.0];
 
 #[derive(Clone, Copy)]
 struct DiagnosticSolver {
@@ -100,7 +111,7 @@ fn diagnostic_title(kind: &str) -> Option<(&'static str, &'static str, &'static 
     match kind {
         "pareto" => Some((
             "Pareto frontier - parameter sweeps",
-            "Single-point time (us, log scale)",
+            "Batch wall time / point (us, log scale)",
             "Relative error (log scale)",
         )),
         "stability" => Some((
@@ -109,9 +120,9 @@ fn diagnostic_title(kind: &str) -> Option<(&'static str, &'static str, &'static 
             "Relative difference to reference (log scale)",
         )),
         "symmetry" => Some((
-            "Tensor symmetry - conservative-field check",
+            "Tensor consistency - exterior Laplace check",
             "Height above surface (m, log scale)",
-            "Asymmetry ratio (log scale)",
+            "|trace(H)| / ||H||F (log scale)",
         )),
         _ => None,
     }
@@ -309,25 +320,46 @@ fn mean_relative_difference(a: &DiagnosticTensor, b: &DiagnosticTensor) -> f64 {
     }
 }
 
+// Keep only non-dominated points. A parameter sweep is not a Pareto frontier
+// merely because its samples are joined in timing order; the rising arm of a
+// V-shaped curve is dominated and must not be presented as optimal.
+fn pareto_frontier(mut points: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    points.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.total_cmp(&right.1))
+    });
+    let mut best_error = f64::INFINITY;
+    points.retain(|(_, error)| {
+        if *error < best_error {
+            best_error = *error;
+            true
+        } else {
+            false
+        }
+    });
+    points
+}
+
 fn solver_reference(solver: DiagnosticSolver) -> DiagnosticSolver {
     match solver.density {
         "uniform" => diagnostic_solvers()[0],
-        "cauchy" => diagnostic_solvers()[2],
-        _ => diagnostic_solvers()[1],
+        // The continuous-density full-direction RT-FP path is a materially
+        // better reference than the discretised Mascon field.
+        "cauchy" => diagnostic_solvers()[3],
+        // General alpha has no universal elliptic closed form.  Use the full
+        // full-direction, GL16 CarlsonAlpha result as the browser reference;
+        // swept candidates top out at 128 directions and therefore cannot
+        // compare equal merely by selecting the same radial order.
+        _ => diagnostic_solvers()[7],
     }
-}
-
-fn is_reference(solver: DiagnosticSolver) -> bool {
-    let reference = solver_reference(solver);
-    solver.algorithm == reference.algorithm
-        && solver.source_set == reference.source_set
-        && solver.density == reference.density
 }
 
 fn sweep_for(solver: DiagnosticSolver) -> Option<&'static [f64]> {
     match solver.algorithm {
         "mascon" => Some(&SWEEP_THETA),
         "rtfp" => Some(&SWEEP_DIRECTIONS),
+        "carlson" if solver.density == "cauchy" => Some(&SWEEP_DIRECTIONS),
         "carlsonalpha" if solver.density == "fractional-cauchy" => Some(&SWEEP_QUADRATURE),
         _ => None,
     }
@@ -336,8 +368,22 @@ fn sweep_for(solver: DiagnosticSolver) -> Option<&'static [f64]> {
 fn sweep_options(solver: DiagnosticSolver, value: f64) -> (Option<f64>, Option<f64>, Option<f64>) {
     match solver.algorithm {
         "mascon" => (None, None, Some(value)),
-        "rtfp" => (Some(value), None, None),
-        "carlsonalpha" => (Some(64.0), Some(value), None),
+        "rtfp" | "carlson" => (Some(value), None, None),
+        // Couple angular and radial refinement. Holding the direction count at
+        // 64 made the angular error floor hide every GL refinement and produced
+        // a misleading horizontal CarlsonAlpha plateau.
+        "carlsonalpha" => (Some((value * 8.0).clamp(32.0, 128.0)), Some(value), None),
+        _ => (None, None, None),
+    }
+}
+
+fn stability_options(
+    solver: DiagnosticSolver,
+) -> (Option<f64>, Option<f64>, Option<f64>) {
+    match (solver.algorithm, solver.density) {
+        ("rtfp" | "carlson", "cauchy") => (Some(128.0), None, None),
+        ("carlsonalpha", "fractional-cauchy") => (Some(128.0), Some(16.0), None),
+        ("mascon", _) => (None, None, Some(0.1)),
         _ => (None, None, None),
     }
 }
@@ -356,20 +402,48 @@ async fn run_pareto(core: &Rc<RefCell<Core>>) -> Result<(), String> {
     let span = 100.0 / total.max(1) as f64;
     let height = core.borrow().standoff_mm.max(1.0);
     let mut series = Vec::new();
+    let mut references: Vec<(&'static str, DiagnosticTensor)> = Vec::new();
     let mut progress = 0usize;
     for solver in plotted {
         let values = sweep_for(solver).unwrap();
         let reference_solver = solver_reference(solver);
-        let (reference, _) = evaluate_tensor_sample(
+        let reference = if let Some((_, tensor)) = references
+            .iter()
+            .find(|(density, _)| *density == solver.density)
+        {
+            tensor.clone()
+        } else {
+            let (tensor, _) = evaluate_tensor_sample(
+                core,
+                reference_solver,
+                height,
+                DIAGNOSTIC_FACES,
+                None,
+                None,
+                None,
+                progress as f64 * span,
+                span,
+            )
+            .await?;
+            references.push((solver.density, tensor.clone()));
+            tensor
+        };
+        // Compile the pipeline, populate immutable caches and pay the first
+        // allocation outside the timed sweep. The warm-up has one point, so it
+        // is cheap and removes the cold-start kink that previously created a
+        // spurious V-shaped timing curve.
+        let (warm_direction, warm_quadrature, warm_theta) =
+            sweep_options(solver, values[0]);
+        let _ = evaluate_tensor_sample(
             core,
-            reference_solver,
+            solver,
             height,
-            DIAGNOSTIC_FACES,
-            None,
-            None,
-            None,
+            1,
+            warm_direction,
+            warm_quadrature,
+            warm_theta,
             progress as f64 * span,
-            span,
+            0.0,
         )
         .await?;
         let mut points = Vec::new();
@@ -393,7 +467,7 @@ async fn run_pareto(core: &Rc<RefCell<Core>>) -> Result<(), String> {
                 mean_relative_difference(&tensor, &reference).max(1e-15),
             ));
         }
-        points.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let points = pareto_frontier(points);
         series.push((
             solver.label.to_string(),
             solver.color.to_string(),
@@ -402,7 +476,7 @@ async fn run_pareto(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             points,
         ));
     }
-    publish_diagnostic(core, "pareto", "log", "log", series, "Reference series are omitted. Each line is a real parameter sweep: Mascon theta, RT-FP direction count, or CarlsonAlpha quadrature nodes; uniform uses Werner, Cauchy uses Mascon, and fractional Cauchy uses the fractional-Cauchy Mascon baseline. Time is normalized per tensor point and both axes use positive log domains.".to_string(), "pareto-frontier.svg");
+    publish_diagnostic(core, "pareto", "log", "log", series, "Only non-dominated sweep samples are drawn. Each solver receives a one-point untimed warm-up, removing asset/pipeline cold-start distortion. CarlsonAlpha couples angular and radial refinement so its GL sweep is not hidden behind a fixed angular-error floor. Timings remain batch wall time per point, including submission and readback; they are not isolated shader timestamps.".to_string(), "pareto-frontier.svg");
     Ok(())
 }
 
@@ -410,36 +484,47 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
     let solvers = diagnostic_solvers();
     let plotted: Vec<DiagnosticSolver> = solvers
         .into_iter()
-        .filter(|solver| !is_reference(*solver))
+        .filter(|solver| solver.algorithm != "werner")
         .collect();
     let total = plotted.len() * DIAGNOSTIC_HEIGHTS_MM.len();
     let span = 100.0 / total.max(1) as f64;
     let mut series = Vec::new();
+    let mut references: Vec<(&'static str, f64, DiagnosticTensor)> = Vec::new();
     let mut progress = 0usize;
     for solver in plotted {
         let reference_solver = solver_reference(solver);
         let mut points = Vec::new();
         for height in DIAGNOSTIC_HEIGHTS_MM {
-            let (reference, _) = evaluate_tensor_sample(
-                core,
-                reference_solver,
-                height,
-                DIAGNOSTIC_FACES,
-                None,
-                None,
-                None,
-                progress as f64 * span,
-                span,
-            )
-            .await?;
+            let reference = if let Some((_, _, tensor)) =
+                references.iter().find(|(density, cached_height, _)| {
+                    *density == solver.density && *cached_height == height
+                }) {
+                tensor.clone()
+            } else {
+                let (tensor, _) = evaluate_tensor_sample(
+                    core,
+                    reference_solver,
+                    height,
+                    DIAGNOSTIC_FACES,
+                    None,
+                    None,
+                    None,
+                    progress as f64 * span,
+                    span,
+                )
+                .await?;
+                references.push((solver.density, height, tensor.clone()));
+                tensor
+            };
+            let (direction, quadrature, theta) = stability_options(solver);
             let (tensor, _) = evaluate_tensor_sample(
                 core,
                 solver,
                 height,
                 DIAGNOSTIC_FACES,
-                None,
-                None,
-                None,
+                direction,
+                quadrature,
+                theta,
                 progress as f64 * span,
                 span,
             )
@@ -458,7 +543,7 @@ async fn run_stability(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             points,
         ));
     }
-    publish_diagnostic(core, "stability", "log", "log", series, "Three density facets show relative tensor residuals against Werner for uniform density and the matching Mascon density asset for Cauchy and fractional Cauchy. The reference scale floor prevents near-zero far-field values from creating artificial spikes. No smoothing, multipole, or near/far approximation is used.".to_string(), "near-surface-stability.svg");
+    publish_diagnostic(core, "stability", "log", "log", series, "Uniform density uses Werner. Cauchy candidates use the same 128-direction rule and are compared with full-direction RT-FP; fractional candidates use a fixed GL16 radial rule and are compared with full-direction GL16 CarlsonAlpha. References are cached per density and height. These f32 browser baselines test solver consistency, not native-f64 truth.".to_string(), "near-surface-stability.svg");
     Ok(())
 }
 
@@ -484,21 +569,23 @@ async fn run_tensor_symmetry(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             )
             .await?;
             progress += 1;
-            let asymmetry = tensor
+            let trace_squared = tensor
                 .values
                 .iter()
-                .map(|value| {
-                    // The browser diagnostic contract stores the six independent
-                    // symmetric entries (xx, yy, zz, xy, xz, yz), so the missing
-                    // transposed entries are representation-identical by design.
-                    // Expose the floating-point representation floor rather than
-                    // claiming an independent nine-component curl measurement.
-                    let h_norm = tensor_norm(value).max(f64::MIN_POSITIVE);
-                    (f64::EPSILON * (1.0 + h_norm.abs().min(4.0))).max(f64::MIN_POSITIVE)
-                })
-                .sum::<f64>()
-                / tensor.len().max(1) as f64;
-            points.push((height / 1000.0, asymmetry));
+                .map(|value| (value[0] + value[1] + value[2]).powi(2))
+                .sum::<f64>();
+            let norm_squared = tensor
+                .values
+                .iter()
+                .map(|value| tensor_norm(value).powi(2))
+                .sum::<f64>();
+            // All diagnostic tensors originate in f32. Values below f32 epsilon
+            // are censored at the representable precision floor instead of
+            // being advertised as an f64/machine-precision measurement.
+            let trace_ratio = (trace_squared.sqrt()
+                / norm_squared.sqrt().max(f64::MIN_POSITIVE))
+            .max(f32::EPSILON as f64);
+            points.push((height / 1000.0, trace_ratio));
         }
         series.push((
             solver.label.to_string(),
@@ -508,7 +595,7 @@ async fn run_tensor_symmetry(core: &Rc<RefCell<Core>>) -> Result<(), String> {
             points,
         ));
     }
-    publish_diagnostic(core, "symmetry", "log", "log", series, "Tensor symmetry ratio ||H-H^T||F/||H||F from the six-component Hessian representation. The plotted values are the floating-point representation floor because transposed entries are not independently transported by this contract; this is not an independent finite-difference curl proof.".to_string(), "tensor-symmetry.svg");
+    publish_diagnostic(core, "symmetry", "log", "log", series, "This is the aggregate exterior Laplace residual sqrt(sum trace(H)^2)/sqrt(sum ||H||F^2), not an H_ij-H_ji test: six-component storage is symmetric by construction. Values are censored at f32 epsilon; the former ~2.5e-16 line was therefore not a defensible machine-precision claim. A nine-component or finite-difference curl diagnostic is still required for an independent conservative-field test.".to_string(), "tensor-consistency.svg");
     Ok(())
 }
 

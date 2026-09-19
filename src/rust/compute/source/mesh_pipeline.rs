@@ -200,7 +200,7 @@ fn gauss_legendre(n: usize) -> (Vec<f64>, Vec<f64>) {
 }
 
 /// `(x, y, z, weight)` direction table over the sphere.
-fn quadrature_directions(total: usize) -> Vec<f32> {
+pub(crate) fn quadrature_directions(total: usize) -> Vec<f32> {
     let n_theta = 2.max(scalar_round((scalar_max(total as f64, 8.0) / 2.0).sqrt()) as usize);
     let n_phi = 2 * n_theta;
     let (nodes, weights) = gauss_legendre(n_theta);
@@ -222,7 +222,7 @@ fn quadrature_directions(total: usize) -> Vec<f32> {
 
 /// `buildMeshPipeline`: positions, indices, BVH bounds, BVH links, directions,
 /// kernels and face records behind an RTP1 v2 header.
-fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Vec<u8> {
+fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Result<Vec<u8>, String> {
     // The source asset is indexed by exact coordinates; rebuild that compact map
     // so the ray shader reads a real indexed mesh rather than a triangle soup.
     let mut map: HashMap<(u32, u32, u32), u32> = HashMap::new();
@@ -252,6 +252,7 @@ fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Vec<u8> {
             indices[slot * 3 + offset] = map[&vertex_key(point)];
         }
     }
+    validate_closed_oriented_indices(&indices)?;
     let node_count = bvh.nodes.len();
     let dirs = quadrature_directions(DIRECTION_TOTAL);
     let dir_count = dirs.len() / 4;
@@ -319,5 +320,41 @@ fn build_mesh_pipeline(triangles: &[Triangle], kernels: &[Kernel]) -> Vec<u8> {
     for (index, value) in build_face_records(triangles, 1.0).iter().enumerate() {
         out.bytes[offset + index * 4..offset + index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
-    out.bytes
+    Ok(out.bytes)
+}
+
+/// A boundary one-form cancels on shared edges only if the two incident faces
+/// traverse that edge in opposite directions. Enforce the topological part of
+/// that contract before any RT-FP or Carlson asset is uploaded.
+fn validate_closed_oriented_indices(indices: &[u32]) -> Result<(), String> {
+    let (triangles, remainder) = indices.as_chunks::<3>();
+    if !remainder.is_empty() {
+        return Err("triangle index buffer is not divisible by three".into());
+    }
+    let mut edges: HashMap<(u32, u32), (u32, i32)> = HashMap::new();
+    for triangle in triangles {
+        for [from, to] in [
+            [triangle[0], triangle[1]],
+            [triangle[1], triangle[2]],
+            [triangle[2], triangle[0]],
+        ] {
+            if from == to {
+                return Err(format!("degenerate mesh edge at vertex {from}"));
+            }
+            let key = (from.min(to), from.max(to));
+            let direction = if from < to { 1 } else { -1 };
+            let entry = edges.entry(key).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += direction;
+        }
+    }
+    if let Some((edge, (incidence, balance))) = edges
+        .into_iter()
+        .find(|(_, (incidence, balance))| *incidence != 2 || *balance != 0)
+    {
+        return Err(format!(
+            "mesh edge {edge:?} violates closed oriented adjacency: incidence={incidence}, orientation_balance={balance}"
+        ));
+    }
+    Ok(())
 }

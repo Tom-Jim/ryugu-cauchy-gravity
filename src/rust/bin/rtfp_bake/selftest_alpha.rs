@@ -43,40 +43,70 @@ fn selftest_carlson_alpha(args: &Args) -> Result<(), String> {
     let mut hits = Vec::new();
     let mut errs = Vec::new();
     for (i, x) in sample.iter().enumerate() {
-        // `block_carlson_alpha` returns the regularized radial remainder only.
-        // The analytic uniform-density tensor belongs to the separate near-field
-        // term, so comparing it against a full `rho·W + remainder` reference
-        // would manufacture a large false disagreement.
+        // Independent reference for the hybrid residual. Perturbing each
+        // direction re-traces the mesh, so the f64 finite difference includes
+        // moving interval endpoints without reusing the GPU face-normal formula.
         let mut want = [0.0; 6];
         for (u, omega) in &dirs {
-            geom::bvh_crossings(
-                &bvh,
-                &mesh,
-                *x,
-                [-u[0], -u[1], -u[2]],
-                GEOM_EPS_M,
-                t_max,
-                &mut hits,
-            );
-            let (slots, overflow) = split::intervals(&hits, false);
-            if overflow {
-                return Err("alpha selftest ray exceeded interval capacity".into());
+            let mut scalar_at = |direction: [f64; 3]| -> Result<f64, String> {
+                geom::bvh_crossings(
+                    &bvh,
+                    &mesh,
+                    *x,
+                    [-direction[0], -direction[1], -direction[2]],
+                    GEOM_EPS_M,
+                    t_max,
+                    &mut hits,
+                );
+                let (slots, overflow) = split::intervals(&hits, false);
+                if overflow {
+                    return Err("alpha selftest ray exceeded interval capacity".into());
+                }
+                let intervals: Vec<(f64, f64)> = slots.iter().flatten().copied().collect();
+                Ok(carlson_alpha::remainder_scalar_reference(
+                    std::slice::from_ref(&kernel),
+                    *x,
+                    direction,
+                    &intervals,
+                ))
+            };
+            let epsilon = 2.0e-4;
+            let mut gradient = [0.0; 3];
+            for axis in 0..3 {
+                let mut tangent = [0.0; 3];
+                tangent[axis] = 1.0;
+                for component in 0..3 {
+                    tangent[component] -= u[axis] * u[component];
+                }
+                let mut plus = [0.0; 3];
+                let mut minus = [0.0; 3];
+                for component in 0..3 {
+                    plus[component] = u[component] + epsilon * tangent[component];
+                    minus[component] = u[component] - epsilon * tangent[component];
+                }
+                let plus_norm = (plus[0] * plus[0] + plus[1] * plus[1] + plus[2] * plus[2]).sqrt();
+                let minus_norm =
+                    (minus[0] * minus[0] + minus[1] * minus[1] + minus[2] * minus[2]).sqrt();
+                for component in 0..3 {
+                    plus[component] /= plus_norm;
+                    minus[component] /= minus_norm;
+                }
+                gradient[axis] = (scalar_at(plus)? - scalar_at(minus)?) / (2.0 * epsilon);
             }
-            let intervals: Vec<(f64, f64)> = slots.iter().flatten().copied().collect();
-            let scalar = carlson_alpha::remainder_scalar_reference(
-                std::slice::from_ref(&kernel),
-                *x,
-                *u,
-                &intervals,
-            );
-            tensor::add_tensor_term(&mut want, u, G * *omega * scalar);
+            let amplitude = G * *omega;
+            want[0] += amplitude * u[0] * gradient[0];
+            want[1] += amplitude * u[1] * gradient[1];
+            want[2] += amplitude * u[2] * gradient[2];
+            want[3] += 0.5 * amplitude * (u[1] * gradient[0] + u[0] * gradient[1]);
+            want[4] += 0.5 * amplitude * (u[2] * gradient[0] + u[0] * gradient[2]);
+            want[5] += 0.5 * amplitude * (u[2] * gradient[1] + u[1] * gradient[2]);
         }
         errs.push(rel6(&gpu[i], &want));
     }
     errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let worst = errs[errs.len() - 1];
     println!(
-        "  CarlsonAlpha alpha=1.25 GPU vs f64/Carlson reference: median {:.3e}, worst {:.3e}",
+        "  CarlsonAlpha alpha=1.25 hybrid GPU vs f64 directional derivative: median {:.3e}, worst {:.3e}",
         errs[errs.len() / 2],
         worst
     );

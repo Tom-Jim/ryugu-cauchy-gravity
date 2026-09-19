@@ -133,32 +133,6 @@ fn kernel_volume(triangles: &[Triangle], center: Vec3, sigma: f64) -> f64 {
     total
 }
 
-fn body_volume(triangles: &[Triangle]) -> f64 {
-    kernel_volume(triangles, [0.0, 0.0, 0.0], 0.0)
-}
-
-fn volume_centroid(triangles: &[Triangle]) -> Vec3 {
-    let mut accumulated: Vec3 = [0.0, 0.0, 0.0];
-    for triangle in triangles {
-        let raw_normal = cross(sub(triangle.b, triangle.a), sub(triangle.c, triangle.b));
-        for (bary, weight) in DUNANT7 {
-            let y = triangle_point(triangle, bary);
-            let r2 = dot(y, y);
-            // c_i = V^-1 ∮ (|y|² / 2) n_i dS. `raw_normal` has
-            // magnitude 2·area, so the triangle factor is 1/4, not 1/2.
-            accumulated[0] += 0.25 * weight * r2 * raw_normal[0];
-            accumulated[1] += 0.25 * weight * r2 * raw_normal[1];
-            accumulated[2] += 0.25 * weight * r2 * raw_normal[2];
-        }
-    }
-    let volume = body_volume(triangles);
-    if volume.abs() > 1e-30 {
-        scale(accumulated, 1.0 / volume)
-    } else {
-        [0.0, 0.0, 0.0]
-    }
-}
-
 fn normalize_kernels(
     triangles: &[Triangle],
     kernels: &[Kernel],
