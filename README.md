@@ -18,25 +18,41 @@
 
 ## Preview
 
-The five algorithms use one observation surface, one RHGF face-record format,
-one scalar colour window and one Bevy renderer. The images are solver
-comparisons, not separate rendering pipelines.
+The images below are Chrome captures of the deployed WebGPU viewer at the
+default 16 m observation height. All three diagnostic figures use the viewer's
+shared tensor sampling; they are comparison views, not separate rendering
+pipelines.
 
-| Carlson · Cauchy · 16 m | RT-FP · Cauchy · 16 m |
-| :---: | :---: |
-| [![Carlson Cauchy](docs/images/carlson-cauchy-16m.png)](docs/images/carlson-cauchy-16m.png) | [![RT-FP Cauchy](docs/images/rtfp-cauchy-16m.png)](docs/images/rtfp-cauchy-16m.png) |
-| Mascon · Cauchy · 16 m | Werner · uniform · 16 m |
-| [![Mascon Cauchy](docs/images/mascon-cauchy-16m.png)](docs/images/mascon-cauchy-16m.png) | [![Werner uniform](docs/images/werner-uniform-16m.png)](docs/images/werner-uniform-16m.png) |
+### Live viewer at 16 m
 
-| CarlsonAlpha · fractional Cauchy · 16 m |
-| :---: |
-| [![CarlsonAlpha fractional Cauchy](docs/images/carlsonalpha-fractional-cauchy-16m.png)](docs/images/carlsonalpha-fractional-cauchy-16m.png) |
+### Algorithm and density captures
 
-Low-altitude references:
-
-| Carlson · Cauchy · 1 mm | RT-FP · Cauchy · 1 mm | Mascon · Cauchy · 1 mm |
+| Werner · uniform | Mascon · fractional Cauchy | Mascon · Cauchy |
 | :---: | :---: | :---: |
-| [![Carlson Cauchy at 1 mm](docs/images/carlson-cauchy-1mm.png)](docs/images/carlson-cauchy-1mm.png) | [![RT-FP Cauchy at 1 mm](docs/images/rtfp-cauchy-1mm.png)](docs/images/rtfp-cauchy-1mm.png) | [![Mascon Cauchy at 1 mm](docs/images/mascon-cauchy-1mm.png)](docs/images/mascon-cauchy-1mm.png) |
+| [![Werner uniform](docs/images/werner-uniform-16m.png)](docs/images/werner-uniform-16m.png) | [![Mascon fractional Cauchy](docs/images/mascon-fractional-cauchy-16m.png)](docs/images/mascon-fractional-cauchy-16m.png) | [![Mascon Cauchy](docs/images/mascon-cauchy-16m.png)](docs/images/mascon-cauchy-16m.png) |
+
+| RT-FP · uniform | RT-FP · Cauchy | Carlson · uniform |
+| :---: | :---: | :---: |
+| [![RT-FP uniform](docs/images/rtfp-uniform-16m.png)](docs/images/rtfp-uniform-16m.png) | [![RT-FP Cauchy](docs/images/rtfp-cauchy-16m.png)](docs/images/rtfp-cauchy-16m.png) | [![Carlson uniform](docs/images/carlson-uniform-16m.png)](docs/images/carlson-uniform-16m.png) |
+
+| Carlson · Cauchy | CarlsonAlpha · uniform | CarlsonAlpha · fractional Cauchy |
+| :---: | :---: | :---: |
+| [![Carlson Cauchy](docs/images/carlson-cauchy-16m.png)](docs/images/carlson-cauchy-16m.png) | [![CarlsonAlpha uniform](docs/images/carlsonalpha-uniform-16m.png)](docs/images/carlsonalpha-uniform-16m.png) | [![CarlsonAlpha fractional Cauchy](docs/images/carlsonalpha-fractional-cauchy-16m.png)](docs/images/carlsonalpha-fractional-cauchy-16m.png) |
+
+### Diagnostic comparisons
+
+| Pareto frontier | Exterior Laplace consistency |
+| :---: | :---: |
+| [![Pareto frontier parameter sweep](docs/images/pareto-frontier.png)](docs/images/pareto-frontier.png) | [![Exterior Laplace residual](docs/images/tensor-consistency.png)](docs/images/tensor-consistency.png) |
+
+|  Near-surface residual|
+| :---: |
+| [![Near-surface residual by density](docs/images/near-surface-residual.png)](docs/images/near-surface-residual.png) |
+
+The near-surface figure spans 1 mm to 10 m on logarithmic axes and separates
+uniform, Cauchy and fractional-Cauchy references. The Laplace figure shows the
+aggregate exterior harmonic residual for all solver/density tracks. The Pareto
+figure keeps only non-dominated batch wall-time/error samples. 
 
 ## Scope
 
