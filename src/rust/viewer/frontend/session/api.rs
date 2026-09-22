@@ -114,10 +114,10 @@ impl Session {
             state.compare_key.clear();
             state.record_generation += 1;
         }
-        if !model_path.is_empty() {
-            if let Err(error) = crate::set_display_model_path(model_path.clone()) {
-                self.core.borrow().ui.status(&format!("Model display update failed: {error:?}"));
-            }
+        if !model_path.is_empty()
+            && let Err(error) = crate::set_display_model_path(model_path.clone())
+        {
+            self.core.borrow().ui.status(&format!("Model display update failed: {error:?}"));
         }
         cancel_compute(&self.core);
         apply_pending_assets(&self.core, &model_path);
