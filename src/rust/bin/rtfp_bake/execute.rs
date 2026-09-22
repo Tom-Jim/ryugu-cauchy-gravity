@@ -9,12 +9,12 @@ fn run_rtfp(args: &Args) -> Result<(), String> {
     run_ray_algorithm(args, RayAlgorithm::Rtfp)
 }
 
-fn run_carlson_alpha(args: &Args) -> Result<(), String> {
-    run_ray_algorithm(args, RayAlgorithm::CarlsonAlpha)
-}
-
 fn run_carlson(args: &Args) -> Result<(), String> {
     run_ray_algorithm(args, RayAlgorithm::Carlson)
+}
+
+fn run_carlson_alpha(args: &Args) -> Result<(), String> {
+    run_ray_algorithm(args, RayAlgorithm::CarlsonAlpha)
 }
 
 fn run_ray_algorithm(args: &Args, algorithm: RayAlgorithm) -> Result<(), String> {

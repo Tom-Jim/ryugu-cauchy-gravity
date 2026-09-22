@@ -45,23 +45,16 @@ impl RuntimeSource {
         self.triangles.len()
     }
 
-    pub fn rtfp(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
-        let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
-        let kernels =
-            normalize_kernels(&self.triangles, &density.kernels, density.total_mass_target)?;
-        build_mesh_pipeline(&self.triangles, &kernels)
-    }
-
-    pub fn carlson_cauchy(&self, cauchy_toml: &str) -> Result<Vec<u8>, String> {
-        let density = parse_density_text(cauchy_toml, "cauchy.toml")?;
-        let kernels =
-            normalize_kernels(&self.triangles, &density.kernels, density.total_mass_target)?;
+    pub fn rtfp(&self, elliptic_toml: &str) -> Result<Vec<u8>, String> {
+        let density = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
+        let kernels = calibrate_kernels(&self.triangles, &density)?;
         build_mesh_pipeline(&self.triangles, &kernels)
     }
 
     pub fn carlson_alpha(&self, elliptic_toml: &str) -> Result<Vec<u8>, String> {
         let density = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
-        build_mesh_pipeline(&self.triangles, &density.kernels)
+        let kernels = calibrate_kernels(&self.triangles, &density)?;
+        build_mesh_pipeline(&self.triangles, &kernels)
     }
 
     pub fn mascon(
@@ -71,11 +64,19 @@ impl RuntimeSource {
     ) -> Result<(Vec<u8>, Vec<u8>), String> {
         let cauchy = parse_density_text(cauchy_toml, "cauchy.toml")?;
         let elliptic = parse_density_text(elliptic_toml, "cauchy_elliptic.toml")?;
+        let cauchy_kernels = calibrate_kernels(&self.triangles, &cauchy)?;
+        let elliptic_kernels = calibrate_kernels(&self.triangles, &elliptic)?;
+        let target_mass = cauchy
+            .mean_density_target
+            .map(|rho| rho * mesh_enclosed_volume(&self.triangles))
+            .unwrap_or(cauchy.total_mass_target);
+        let constant_rho = cauchy.mean_density_target.unwrap_or(CONSTANT_DENSITY);
         let points = build_mascon(
             &self.triangles,
-            &cauchy.kernels,
-            &elliptic.kernels,
-            cauchy.total_mass_target,
+            &cauchy_kernels,
+            &elliptic_kernels,
+            target_mass,
+            constant_rho,
         )?;
         let source = parse_mascon_bytes(&points, "runtime Mascon source")?;
         let (tree, _, _) = build_mascon_tree(&source);

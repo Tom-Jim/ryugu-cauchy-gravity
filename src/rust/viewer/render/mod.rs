@@ -41,11 +41,39 @@ const PAINT_PER_FRAME: usize = 4000;
 
 static PENDING_MODEL_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static DISPLAY_SCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+static DISPLAY_SPIN: OnceLock<Mutex<(Quat, f64)>> = OnceLock::new();
+
+fn display_spin() -> &'static Mutex<(Quat, f64)> {
+    DISPLAY_SPIN.get_or_init(|| Mutex::new((Quat::IDENTITY, PERIOD_S)))
+}
 
 #[wasm_bindgen]
 pub fn set_display_scale(scale_meters_per_unit: f32) {
     if scale_meters_per_unit.is_finite() && scale_meters_per_unit > 0.0 {
         DISPLAY_SCALE_BITS.store(scale_meters_per_unit.to_bits(), Ordering::Relaxed);
+    }
+}
+
+#[wasm_bindgen]
+pub fn set_display_quaternion(x: f32, y: f32, z: f32, w: f32) {
+    let mut q = Quat::from_xyzw(x, y, z, w);
+    if q.length_squared() > 1e-12 {
+        q = q.normalize();
+    } else {
+        q = Quat::IDENTITY;
+    }
+    if let Ok(mut lock) = display_spin().lock() {
+        lock.0 = q;
+    }
+}
+
+#[wasm_bindgen]
+pub fn set_display_rotation_period(period_hours: f64) {
+    if !(period_hours > 0.0 && period_hours.is_finite()) {
+        return;
+    }
+    if let Ok(mut lock) = display_spin().lock() {
+        lock.1 = period_hours * 3600.0;
     }
 }
 
@@ -577,11 +605,19 @@ fn tick(time: Res<Time>, mut clock: ResMut<Clock>) {
 }
 
 fn spin(mut q: Query<&mut Transform, With<Ryugu>>, clock: Res<Clock>) {
-    let r = Quat::from_axis_angle(
-        SPIN_AXIS.normalize(),
-        (std::f64::consts::TAU / PERIOD_S * clock.0) as f32,
-    );
+    let (base_quat, period_s) = if let Ok(lock) = display_spin().lock() {
+        *lock
+    } else {
+        (Quat::IDENTITY, PERIOD_S)
+    };
+    let angle = if period_s > 0.0 {
+        (std::f64::consts::TAU / period_s * clock.0) as f32
+    } else {
+        0.0
+    };
+    let spin_rot = Quat::from_axis_angle(SPIN_AXIS.normalize(), angle);
+    let total_rot = base_quat * spin_rot;
     for mut t in &mut q {
-        t.rotation = r;
+        t.rotation = total_rot;
     }
 }

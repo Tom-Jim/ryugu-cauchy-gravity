@@ -92,7 +92,6 @@ fn selftest(args: &Args) -> Result<(), String> {
     );
     selftest_mass()?;
     selftest_surface_form(args)?;
-    selftest_carlson(args)?;
     selftest_carlson_alpha(args)?;
     selftest_gpu(args)
 }

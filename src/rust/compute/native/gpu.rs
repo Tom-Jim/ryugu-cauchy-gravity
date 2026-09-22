@@ -274,6 +274,7 @@ pub struct Scene {
     inside_pipeline: wgpu::ComputePipeline,
     rays_pipeline: wgpu::ComputePipeline,
     analytic_pipeline: wgpu::ComputePipeline,
+    #[allow(dead_code)]
     carlson_surface_pipeline: wgpu::ComputePipeline,
     remainder_pipeline: wgpu::ComputePipeline,
     carlson_alpha_pipeline: wgpu::ComputePipeline,

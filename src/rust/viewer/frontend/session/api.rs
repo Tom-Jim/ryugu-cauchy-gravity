@@ -150,6 +150,14 @@ impl Session {
         }
     }
 
+    pub fn set_rotation_quaternion(&self, x: f64, y: f64, z: f64, w: f64) {
+        crate::set_display_quaternion(x as f32, y as f32, z as f32, w as f32);
+    }
+
+    pub fn set_rotation_period(&self, period_hours: f64) {
+        crate::set_display_rotation_period(period_hours);
+    }
+
     /// Re-paint the latest in-memory result with a shared colour window.
     pub fn on_reload(&self) {
         let core = self.core.clone();
@@ -273,7 +281,7 @@ fn apply_pending_assets(core: &Rc<RefCell<Core>>, model_path: &str) {
             return;
         };
         engine.set_model_bytes(js_sys::Uint8Array::from(model.as_slice()));
-        engine.set_density_text("cauchy.toml".to_string(), cauchy);
+        engine.set_density_text("cauchy_elliptic.toml".to_string(), cauchy);
         engine.set_density_text("cauchy_elliptic.toml".to_string(), elliptic);
         model
     };

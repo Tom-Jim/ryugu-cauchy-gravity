@@ -2,7 +2,6 @@
 
 pub mod analytic;
 pub mod bvh;
-pub mod carlson;
 pub mod carlson_alpha;
 pub mod checkpoint;
 pub mod density;

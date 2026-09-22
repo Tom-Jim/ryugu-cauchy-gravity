@@ -66,7 +66,7 @@ impl ComputeEngine {
                         match source_set.as_str() {
                             "elliptic" => "elliptic",
                             "constant" => "constant",
-                            _ => "cauchy",
+                            _ => "elliptic",
                         },
                         &signal,
                         OutputMode::Tensor,
@@ -76,17 +76,6 @@ impl ComputeEngine {
                 }
                 "rtfp" => {
                     gpu.run_rtfp_tensor(
-                        source_set == "constant",
-                        start,
-                        end,
-                        height_mm,
-                        direction_limit,
-                        &signal,
-                    )
-                    .await
-                }
-                "carlson" => {
-                    gpu.run_carlson_tensor(
                         source_set == "constant",
                         start,
                         end,
@@ -304,7 +293,7 @@ impl ComputeEngine {
                         match source_set.as_str() {
                             "elliptic" => "elliptic",
                             "constant" => "constant",
-                            _ => "cauchy",
+                            _ => "elliptic",
                         },
                         &signal,
                         OutputMode::Scalar,
@@ -314,10 +303,6 @@ impl ComputeEngine {
                 }
                 "rtfp" => {
                     gpu.run_rtfp(constant, block_start, block_end, height_mm, &signal)
-                        .await
-                }
-                "carlson" => {
-                    gpu.run_carlson(constant, block_start, block_end, height_mm, &signal)
                         .await
                 }
                 "carlsonalpha" => {

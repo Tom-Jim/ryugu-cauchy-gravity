@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, Deserialize)]
-struct Kernel {
+pub(crate) struct Kernel {
     c: Vec3,
     sigma: f64,
     w: f64,
@@ -12,12 +12,17 @@ struct DensityFile {
     alpha_default: f64,
     #[serde(default)]
     total_mass_target: f64,
+    #[serde(default)]
+    mean_density: Option<f64>,
+    #[serde(default)]
+    bulk_density_ref: Option<f64>,
     kernels: Vec<KernelEntry>,
 }
 
-struct ParsedDensity {
-    kernels: Vec<Kernel>,
-    total_mass_target: f64,
+pub(crate) struct ParsedDensity {
+    pub(crate) kernels: Vec<Kernel>,
+    pub(crate) total_mass_target: f64,
+    pub(crate) mean_density_target: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -33,7 +38,7 @@ fn one() -> f64 {
     1.0
 }
 
-fn parse_density_text(text: &str, label: &str) -> Result<ParsedDensity, String> {
+pub(crate) fn parse_density_text(text: &str, label: &str) -> Result<ParsedDensity, String> {
     let file: DensityFile = toml::from_str(text).map_err(|error| format!("{label}: {error}"))?;
     let kernels = file
         .kernels
@@ -49,9 +54,14 @@ fn parse_density_text(text: &str, label: &str) -> Result<ParsedDensity, String> 
             alpha: entry.alpha.unwrap_or(file.alpha_default),
         })
         .collect();
+    let mean_density_target = file
+        .mean_density
+        .or(file.bulk_density_ref)
+        .filter(|v| *v > 0.0);
     Ok(ParsedDensity {
         kernels,
         total_mass_target: file.total_mass_target.max(0.0),
+        mean_density_target,
     })
 }
 
@@ -163,4 +173,71 @@ fn normalize_kernels(
             ..*kernel
         })
         .collect())
+}
+
+fn mesh_enclosed_volume(triangles: &[Triangle]) -> f64 {
+    let mut total = 0.0;
+    for t in triangles {
+        let n_raw = cross(sub(t.b, t.a), sub(t.c, t.b));
+        let centroid = [
+            (t.a[0] + t.b[0] + t.c[0]) / 3.0,
+            (t.a[1] + t.b[1] + t.c[1]) / 3.0,
+            (t.a[2] + t.b[2] + t.c[2]) / 3.0,
+        ];
+        total += dot(centroid, n_raw) / 6.0;
+    }
+    total.abs()
+}
+
+fn calibrate_kernels(
+    triangles: &[Triangle],
+    density: &ParsedDensity,
+) -> Result<Vec<Kernel>, String> {
+    if density.kernels.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let max_r = triangles
+        .iter()
+        .flat_map(|t| [t.a, t.b, t.c])
+        .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        .fold(0.0f64, f64::max);
+
+    // Reference bounding radius for Ryugu model in ryugu.glb is ~528.5 m
+    const RYUGU_REF_RADIUS_M: f64 = 528.5;
+    let s_geom = if max_r > 10.0 {
+        max_r / RYUGU_REF_RADIUS_M
+    } else {
+        1.0
+    };
+
+    let scaled_kernels: Vec<Kernel> = density
+        .kernels
+        .iter()
+        .map(|kernel| Kernel {
+            c: [
+                kernel.c[0] * s_geom,
+                kernel.c[1] * s_geom,
+                kernel.c[2] * s_geom,
+            ],
+            sigma: kernel.sigma / s_geom,
+            w: kernel.w,
+            alpha: kernel.alpha,
+        })
+        .collect();
+
+    let target_mass = if let Some(mean_rho) = density.mean_density_target {
+        let vol = mesh_enclosed_volume(triangles);
+        mean_rho * vol
+    } else if density.total_mass_target > 0.0 {
+        density.total_mass_target
+    } else {
+        0.0
+    };
+
+    if target_mass <= 0.0 {
+        return Ok(scaled_kernels);
+    }
+
+    normalize_kernels(triangles, &scaled_kernels, target_mass)
 }

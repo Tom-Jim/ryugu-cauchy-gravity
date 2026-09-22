@@ -14,6 +14,8 @@ type SessionController = {
   evaluate_diagnostic(options: Record<string, unknown>): Promise<Uint8Array>;
   set_asset_selection(model: Uint8Array, modelPath: string, cauchyText: string, ellipticText: string): void;
   set_model_scale(scaleMetersPerUnit: number): void;
+  set_rotation_quaternion(x: number, y: number, z: number, w: number): void;
+  set_rotation_period(periodHours: number): void;
 };
 
 type DiagnosticPoint = { x: number; y: number };
@@ -39,6 +41,11 @@ function errorText(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   return String(error);
 }
+
+export const uiState = reactive({
+  showParams: false,
+  showSaved: false,
+});
 
 export const viewerUi = reactive({
   message: { visible: false, text: "" },
@@ -115,26 +122,100 @@ export const modelParameters = reactive({
   massKg: 4.50e11,
   meanDensityKgM3: 1190,
   scaleMetersPerUnit: 1.0,
+  rotationPeriodHours: 7.63,
+  rotationQuaternionX: 0.0,
+  rotationQuaternionY: 0.0,
+  rotationQuaternionZ: 0.0,
+  rotationQuaternionW: 1.0,
 });
-function loadModelParameters() {
+const MODEL_DEFAULTS: Record<string, Partial<typeof modelParameters>> = {
+  "ryugu.glb": { massKg: 4.50e11, meanDensityKgM3: 1190, scaleMetersPerUnit: 1, rotationPeriodHours: 7.63, rotationQuaternionX: 0, rotationQuaternionY: 0, rotationQuaternionZ: 0, rotationQuaternionW: 1 },
+  "Phobos.glb": { massKg: 1.0659e16, meanDensityKgM3: 1876, scaleMetersPerUnit: 1, rotationPeriodHours: 7.653, rotationQuaternionX: 0, rotationQuaternionY: 0, rotationQuaternionZ: 0, rotationQuaternionW: 1 },
+  "Deimos.glb": { massKg: 1.4762e15, meanDensityKgM3: 1471, scaleMetersPerUnit: 1, rotationPeriodHours: 30.298, rotationQuaternionX: 0, rotationQuaternionY: 0, rotationQuaternionZ: 0, rotationQuaternionW: 1 },
+};
+function storageKeyForModel(modelName: string): string {
+  return `ryugu-model-params-v3:${modelName.toLowerCase()}`;
+}
+function applyModelDefaults(name: string) {
+  const defaults = MODEL_DEFAULTS[name] ?? MODEL_DEFAULTS["ryugu.glb"]!;
+  for (const [key, value] of Object.entries(defaults)) if (value !== undefined) (modelParameters as any)[key] = value;
+  loadModelParameters(name);
+  saveModelParameters(name);
+}
+function loadModelParameters(modelName: string = "ryugu.glb") {
   try {
-    const saved = JSON.parse(localStorage.getItem("ryugu-model-parameters-v2") || "null");
+    localStorage.removeItem("ryugu-model-parameters-v2");
+    const saved = JSON.parse(localStorage.getItem(storageKeyForModel(modelName)) || "null");
     if (saved && typeof saved === "object") {
       for (const key of Object.keys(modelParameters) as Array<keyof typeof modelParameters>) {
         const value = Number(saved[key]);
-        if (Number.isFinite(value) && value > 0) modelParameters[key] = value;
+        if (Number.isFinite(value)) {
+          if (key.startsWith("rotationQuaternion")) {
+            modelParameters[key] = value;
+          } else if (value > 0) {
+            modelParameters[key] = value;
+          }
+        }
       }
     }
   } catch { /* use reference defaults */ }
 }
-function saveModelParameters() {
-  localStorage.setItem("ryugu-model-parameters-v2", JSON.stringify(modelParameters));
+function saveModelParameters(modelName?: string) {
+  const name = modelName ?? assets?.currentModel ?? "ryugu.glb";
+  try {
+    localStorage.setItem(storageKeyForModel(name), JSON.stringify(modelParameters));
+  } catch { /* ignore storage errors */ }
 }
 loadModelParameters();
+function normalizeAndSyncQuaternion() {
+  let x = modelParameters.rotationQuaternionX;
+  let y = modelParameters.rotationQuaternionY;
+  let z = modelParameters.rotationQuaternionZ;
+  let w = modelParameters.rotationQuaternionW;
+  const norm = Math.hypot(x, y, z, w);
+  if (norm > 1e-9) {
+    x = Number((x / norm).toFixed(4));
+    y = Number((y / norm).toFixed(4));
+    z = Number((z / norm).toFixed(4));
+    const rem = Math.max(0, 1 - (x * x + y * y + z * z));
+    w = Number((Math.sign(w || 1) * Math.sqrt(rem)).toFixed(4));
+  } else {
+    x = 0; y = 0; z = 0; w = 1;
+  }
+  modelParameters.rotationQuaternionX = x;
+  modelParameters.rotationQuaternionY = y;
+  modelParameters.rotationQuaternionZ = z;
+  modelParameters.rotationQuaternionW = w;
+  saveModelParameters();
+  session?.set_rotation_quaternion(x, y, z, w);
+}
 function applyPhysicalParameters(text: string): string {
-  return text
+  let updated = text
     .replace(/(^|\n)total_mass_target\s*=\s*[-+0-9.eE]+/m, `$1total_mass_target = ${modelParameters.massKg}`)
-    .replace(/(^|\n)bulk_density_ref\s*=\s*[-+0-9.eE]+/m, `$1bulk_density_ref = ${modelParameters.meanDensityKgM3}`);
+    .replace(/(^|\n)bulk_density_ref\s*=\s*[-+0-9.eE]+/m, `$1bulk_density_ref = ${modelParameters.meanDensityKgM3}`)
+    .replace(/(^|\n)mean_density\s*=\s*[-+0-9.eE]+/m, `$1mean_density = ${modelParameters.meanDensityKgM3}`);
+  if (!/(^|\n)mean_density\s*=/.test(updated)) {
+    updated += `\nmean_density = ${modelParameters.meanDensityKgM3}\n`;
+  }
+  return updated;
+}
+async function syncPhysicalParametersToSession(): Promise<void> {
+  const selectedModels = assets.models.filter((item) => item.selected);
+  const model = selectedModels[0];
+  const densities = assets.densities.filter((item) => item.selected);
+  const elliptic = densities.find((item) => item.name.toLowerCase().includes("elliptic")) ?? assets.densities[0];
+  if (elliptic && session) {
+    try {
+      const ellipticBytes = await bytesFor(elliptic);
+      const tomlText = applyPhysicalParameters(new TextDecoder().decode(ellipticBytes));
+      session.set_asset_selection(
+        model ? await bytesFor(model) : new Uint8Array(),
+        model?.path?.startsWith("assets/models/") ? model.path.slice("assets/".length) : "",
+        tomlText,
+        tomlText,
+      );
+    } catch { /* ignore if not ready */ }
+  }
 }
 
 const ASSET_DB = "ryugu-cauchy-gravity";
@@ -152,7 +233,6 @@ const assetDefaults: AssetItem[] = [
   { id: "model:ryugu.glb", kind: "model", name: "ryugu.glb", path: "assets/models/ryugu.glb", selected: true },
   { id: "model:Deimos.glb", kind: "model", name: "Deimos.glb", path: "assets/models/Deimos.glb", selected: false },
   { id: "model:Phobos.glb", kind: "model", name: "Phobos.glb", path: "assets/models/Phobos.glb", selected: false },
-  { id: "density:cauchy.toml", kind: "density", name: "cauchy.toml", path: "assets/density/cauchy.toml", selected: true },
   { id: "density:cauchy_elliptic.toml", kind: "density", name: "cauchy_elliptic.toml", path: "assets/density/cauchy_elliptic.toml", selected: true },
 ];
 function assetRequest(request: IDBRequest): Promise<any> {
@@ -282,25 +362,32 @@ async function applyAssetSelection(): Promise<void> {
   const selectedModels = assets.models.filter((item) => item.selected);
   const model = selectedModels[0];
   const densities = assets.densities.filter((item) => item.selected);
-  const cauchy = densities.find((item) => !item.name.toLowerCase().includes("elliptic"));
   const elliptic = densities.find((item) => item.name.toLowerCase().includes("elliptic"));
-  if (selectedModels.length !== 1 || !model || densities.length !== 2 || !cauchy || !elliptic) {
-    assets.message = "Select exactly one GLB and exactly both TOML files before using them.";
+  if (selectedModels.length !== 1 || !model || densities.length !== 1 || !elliptic) {
+    assets.message = "Select exactly one GLB and cauchy_elliptic.toml before using them.";
     return;
   }
   assets.busy = true;
   try {
     const modelBytes = await bytesFor(model);
-    const [cauchyBytes, ellipticBytes] = await Promise.all([bytesFor(cauchy), bytesFor(elliptic)]);
+    const ellipticBytes = await bytesFor(elliptic);
     session?.set_asset_selection(
       modelBytes,
       model.path?.startsWith("assets/models/") ? model.path.slice("assets/".length) : "",
-      applyPhysicalParameters(new TextDecoder().decode(cauchyBytes)),
+      applyPhysicalParameters(new TextDecoder().decode(ellipticBytes)),
       applyPhysicalParameters(new TextDecoder().decode(ellipticBytes)),
     );
     assets.currentModel = model.name;
     assets.visible = false;
     assets.message = "";
+    session?.set_model_scale(modelParameters.scaleMetersPerUnit);
+    session?.set_rotation_quaternion(
+      modelParameters.rotationQuaternionX,
+      modelParameters.rotationQuaternionY,
+      modelParameters.rotationQuaternionZ,
+      modelParameters.rotationQuaternionW,
+    );
+    session?.set_rotation_period(modelParameters.rotationPeriodHours);
     session?.on_bake();
   } catch (error) { assets.message = String(error); }
   finally { assets.busy = false; }
@@ -309,8 +396,7 @@ function canApplyAssets(): boolean {
   const models = assets.models.filter((item) => item.selected);
   const densities = assets.densities.filter((item) => item.selected);
   return models.length === 1
-    && densities.length === 2
-    && densities.some((item) => !item.name.toLowerCase().includes("elliptic"))
+    && densities.length === 1
     && densities.some((item) => item.name.toLowerCase().includes("elliptic"));
 }
 async function importFiles(fileList: FileList | File[]): Promise<void> {
@@ -461,6 +547,13 @@ const diagnosticChart = computed(() => {
 export function configureSession(controller: SessionController) {
   session = controller;
   session.set_model_scale(modelParameters.scaleMetersPerUnit);
+  session.set_rotation_quaternion(
+    modelParameters.rotationQuaternionX,
+    modelParameters.rotationQuaternionY,
+    modelParameters.rotationQuaternionZ,
+    modelParameters.rotationQuaternionW,
+  );
+  session.set_rotation_period(modelParameters.rotationPeriodHours);
 }
 
 export function mountViewer() {
@@ -486,11 +579,31 @@ export function mountViewer() {
         modelParameters,
         updateModelParameter: (key: keyof typeof modelParameters, event: Event) => {
           const value = Number((event.target as HTMLInputElement | null)?.value);
-          if (Number.isFinite(value) && value > 0) {
+          const isQuat = key.startsWith("rotationQuaternion");
+          if (Number.isFinite(value) && (isQuat || value > 0)) {
             modelParameters[key] = value;
-            saveModelParameters();
-            if (key === "scaleMetersPerUnit") session?.set_model_scale(value);
+            if (isQuat) {
+              normalizeAndSyncQuaternion();
+            } else {
+              saveModelParameters();
+              if (key === "scaleMetersPerUnit") {
+                session?.set_model_scale(value);
+              } else if (key === "rotationPeriodHours") {
+                session?.set_rotation_period(value);
+              } else if (key === "meanDensityKgM3" || key === "massKg") {
+                void syncPhysicalParametersToSession();
+                session?.on_bake();
+              }
+            }
           }
+        },
+        resetQuaternion: () => {
+          modelParameters.rotationQuaternionX = 0.0;
+          modelParameters.rotationQuaternionY = 0.0;
+          modelParameters.rotationQuaternionZ = 0.0;
+          modelParameters.rotationQuaternionW = 1.0;
+          saveModelParameters();
+          session?.set_rotation_quaternion(0.0, 0.0, 0.0, 1.0);
         },
         openAssets: async () => { assets.visible = true; await ensureAssetLibrary(); },
         closeAssets: () => { assets.visible = false; },
@@ -502,11 +615,19 @@ export function mountViewer() {
           if (kind === "model") {
             item.selected = true;
             assets.currentModel = item.name;
+            applyModelDefaults(item.name);
             if (item.name.toLowerCase() === "ryugu.glb") {
               modelParameters.scaleMetersPerUnit = 1.0;
               saveModelParameters();
               session?.set_model_scale(1.0);
             }
+            session?.set_rotation_quaternion(
+              modelParameters.rotationQuaternionX,
+              modelParameters.rotationQuaternionY,
+              modelParameters.rotationQuaternionZ,
+              modelParameters.rotationQuaternionW,
+            );
+            session?.set_rotation_period(modelParameters.rotationPeriodHours);
             for (const candidate of list) candidate.selected = candidate.id === item.id;
           } else {
             item.selected = !item.selected;
@@ -514,7 +635,7 @@ export function mountViewer() {
           void putAsset(item);
         },
         removeAsset: async (item: AssetItem) => {
-          if (item.id.startsWith("model:ryugu.glb") || item.id.startsWith("density:cauchy.toml") || item.id.startsWith("density:cauchy_elliptic.toml")) return;
+          if (item.id.startsWith("model:ryugu.glb") || item.id.startsWith("density:cauchy_elliptic.toml")) return;
           await deleteAsset(item.id);
           await ensureAssetLibrary();
         },
@@ -522,7 +643,14 @@ export function mountViewer() {
         dropAssets: (event: DragEvent) => { event.preventDefault(); assets.dragging = false; if (event.dataTransfer?.files) void importFiles(event.dataTransfer.files); },
         dragAssets: (event: DragEvent) => { event.preventDefault(); assets.dragging = true; },
         leaveAssets: () => { assets.dragging = false; },
-        saveCurrent: () => session?.on_save_current(),
+        uiState,
+        toggleParams: () => { uiState.showParams = !uiState.showParams; },
+        toggleSaved: () => { uiState.showSaved = !uiState.showSaved; },
+        closeSaved: () => { uiState.showSaved = false; },
+        saveCurrent: () => {
+          uiState.showSaved = true;
+          session?.on_save_current();
+        },
         downloadCurrent: () => session?.on_download_current(),
         deleteCurrent: () => session?.on_delete_current(),
         deleteItem: (item: Record<string, any>) => session?.on_delete_item(String(item?.id ?? "")),

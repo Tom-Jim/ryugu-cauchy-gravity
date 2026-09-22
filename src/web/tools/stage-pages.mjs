@@ -12,7 +12,6 @@ const files = [
   "assets/models/ryugu.glb",
   "assets/models/Deimos.glb",
   "assets/models/Phobos.glb",
-  "assets/density/cauchy.toml",
   "assets/density/cauchy_elliptic.toml",
 ];
 

@@ -159,6 +159,7 @@ pub fn body_volume(mesh: &Mesh) -> f64 {
 /// `∇·(½‖y‖² e_i) = y_i`. `‖y‖²` is quadratic, so the 7-point degree-5 rule is
 /// exact here. The Carlson decomposition needs a point that is actually inside
 /// the body, and the volume centroid is the natural choice.
+#[allow(dead_code)]
 pub fn volume_centroid(mesh: &Mesh) -> [f64; 3] {
     let mut acc = [0.0f64; 3];
     for f in 0..mesh.face_count() {

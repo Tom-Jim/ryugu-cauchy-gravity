@@ -9,6 +9,7 @@ impl GpuSolver {
     ) -> Result<Option<Vec<f32>>, String> {
         let base_url = self.base_url.clone();
         if constant {
+            let density = self.current_mean_density().await;
             return self
                 .run_surface(
                     "carlson_surface",
@@ -20,7 +21,7 @@ impl GpuSolver {
                     start,
                     end,
                     height_mm,
-                    G * CONSTANT_DENSITY,
+                    G * density,
                     signal,
                     OutputMode::Scalar,
                 )
@@ -73,6 +74,7 @@ impl GpuSolver {
     ) -> Result<Option<Vec<f32>>, String> {
         let base_url = self.base_url.clone();
         if constant {
+            let density = self.current_mean_density().await;
             return self
                 .run_surface(
                     "carlson_surface",
@@ -84,7 +86,7 @@ impl GpuSolver {
                     start,
                     end,
                     height_mm,
-                    G * CONSTANT_DENSITY,
+                    G * density,
                     signal,
                     OutputMode::Tensor,
                 )

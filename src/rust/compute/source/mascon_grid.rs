@@ -3,6 +3,7 @@ fn build_mascon(
     cauchy_kernels: &[Kernel],
     elliptic_kernels: &[Kernel],
     cauchy_target_mass: f64,
+    constant_density: f64,
 ) -> Result<Vec<u8>, String> {
     let mut min: Vec3 = [f64::INFINITY; 3];
     let mut max: Vec3 = [f64::NEG_INFINITY; 3];
@@ -74,13 +75,23 @@ fn build_mascon(
             *mass *= cauchy_scale as f32;
         }
     }
+    let elliptic_scale = if cauchy_target_mass > 0.0 && elliptic_raw.abs() > 1e-30 {
+        cauchy_target_mass / elliptic_raw
+    } else {
+        1.0
+    };
+    if elliptic_scale != 1.0 {
+        for mass in elliptic_mass.iter_mut().take(count) {
+            *mass *= elliptic_scale as f32;
+        }
+    }
 
     let mut out = Out::new(64 + count * 16);
     out.u32(0, 0x314d_5952); // RYM1
     out.u32(4, 1);
     out.u32(8, GRID_SIZE as u32);
     out.u32(12, count as u32);
-    out.f32(16, CONSTANT_DENSITY);
+    out.f32(16, constant_density);
     out.f32(20, volume);
     out.f32(24, cauchy_scale);
     out.u32(28, 0);

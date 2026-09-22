@@ -17,8 +17,8 @@
 mod native;
 
 use native::{
-    analytic, bvh, carlson, carlson_alpha, checkpoint, density, esa, geom, gpu, mass, mesh,
-    quadrature, record, split, tensor,
+    analytic, bvh, carlson_alpha, checkpoint, density, esa, geom, gpu, mass, mesh, quadrature,
+    record, split, tensor,
 };
 
 use density::{Density, DensityMode, Normalization};
@@ -53,8 +53,9 @@ enum Solver {
     /// `H = ρ(x)·W(x) + G Σω T Σw R_k` — analytic polyhedral near field plus a
     /// ray-traced directional quadrature.
     Ray,
-    /// `H_ij = G Σ_F Δρ_F n_j I_F[i]` over the star-cone jump surfaces.
+    /// Exact `alpha = 1` branch using Carlson RC-backed endpoint-angle formula.
     Carlson,
+    /// `H_ij = G Σ_F Δρ_F n_j I_F[i]` over the star-cone jump surfaces.
     /// General-alpha radial finite part with the Carlson symmetric-function
     /// verification backend. Unlike [`Self::Ray`], this path accepts non-unit
     /// Cauchy exponents.
@@ -106,7 +107,7 @@ fn parse_args() -> Result<Args, String> {
         out: runtime_path("rtfp-cauchy.bin"),
         order: runtime_path(".rtfp-cauchy-order"),
         checkpoint: runtime_path(".rtfp-cauchy-vertex-checkpoint"),
-        density: r.join("assets/density/cauchy.toml"),
+        density: r.join("assets/density/cauchy_elliptic.toml"),
         mode: DensityMode::Cauchy,
         // The TOML asks for the Ryugu mass scale, so that is the default; the
         // old ρ(0) convention stays reachable for reproducing older records.
@@ -172,7 +173,7 @@ fn parse_args() -> Result<Args, String> {
                 println!(
                     "rtfp-bake --mesh assets/models/ryugu.glb [--out path] [--order path] [--checkpoint path]\n\
                      \x20         [--density toml] [--mode cauchy|elliptic|constant] [--normalize rho0|total_mass|raw]\n\
-                     \x20         [--solver ray|carlson|carlson-alpha] [--standoff-mm 1..32000] [--directions 288]\n\
+                     \x20         [--solver ray|carlson-alpha] [--standoff-mm 1..32000] [--directions 288]\n\
                      \x20         [--resume] [--selftest]"
                 );
                 std::process::exit(0);
@@ -231,7 +232,6 @@ fn main() -> ExitCode {
 
 include!("rtfp_bake/selftest_core.rs");
 include!("rtfp_bake/selftest_alpha.rs");
-include!("rtfp_bake/selftest_carlson.rs");
 include!("rtfp_bake/selftest_surface.rs");
 include!("rtfp_bake/selftest_mass.rs");
 include!("rtfp_bake/execute.rs");

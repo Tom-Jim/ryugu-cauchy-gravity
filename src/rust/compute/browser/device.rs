@@ -136,12 +136,9 @@ impl GpuSolver {
     }
 
     fn set_density_text(&mut self, name: &str, text: String) {
-        let path = if name.to_ascii_lowercase().contains("elliptic") {
-            ELLIPTIC_PATH
-        } else {
-            CAUCHY_PATH
-        };
-        self.density_files.insert(path.to_string(), Rc::new(text));
+        let path = ELLIPTIC_PATH;
+        self.density_files.insert(path.to_string(), Rc::new(text.clone()));
+        self.density_files.insert(name.to_string(), Rc::new(text));
         self.assets.clear();
         self.mascon_buffers.clear();
     }
@@ -157,13 +154,25 @@ impl GpuSolver {
         Ok(self.density_files[path].clone())
     }
 
+    pub(crate) async fn current_mean_density(&mut self) -> f64 {
+        let text = self.density_text(ELLIPTIC_PATH).await.ok();
+        let rho = text.as_deref().and_then(|t| {
+            super::source::parse_density_text(t, "density")
+                .ok()
+                .and_then(|p| p.mean_density_target)
+        });
+        match rho {
+            Some(v) if v > 0.0 => v,
+            _ => CONSTANT_DENSITY,
+        }
+    }
+
     async fn asset(&mut self, url: &str) -> Result<Rc<Vec<u8>>, String> {
         if !self.assets.contains_key(url) {
             let source = self.runtime_source().await?;
             if matches!(url, ASSET_MASCON | ASSET_MASCON_TREE) {
-                let cauchy = self.density_text(CAUCHY_PATH).await?;
                 let elliptic = self.density_text(ELLIPTIC_PATH).await?;
-                let (points, tree) = source.mascon(cauchy.as_str(), elliptic.as_str())?;
+                let (points, tree) = source.mascon(elliptic.as_str(), elliptic.as_str())?;
                 self.assets
                     .insert(ASSET_MASCON.to_string(), Rc::new(points));
                 self.assets
@@ -172,12 +181,8 @@ impl GpuSolver {
                 let bytes = match url {
                     ASSET_GEOMETRY => source.geometry(),
                     ASSET_RTFP => {
-                        let density = self.density_text(CAUCHY_PATH).await?;
+                        let density = self.density_text(ELLIPTIC_PATH).await?;
                         source.rtfp(density.as_str())?
-                    }
-                    ASSET_CARLSON_CAUCHY => {
-                        let density = self.density_text(CAUCHY_PATH).await?;
-                        source.carlson_cauchy(density.as_str())?
                     }
                     ASSET_CARLSON_ALPHA => {
                         let density = self.density_text(ELLIPTIC_PATH).await?;

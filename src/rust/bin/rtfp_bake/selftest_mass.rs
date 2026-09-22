@@ -104,3 +104,4 @@ fn rel6(a: &Sym6, b: &Sym6) -> f64 {
     ]);
     d / frobenius(b).max(1e-300)
 }
+

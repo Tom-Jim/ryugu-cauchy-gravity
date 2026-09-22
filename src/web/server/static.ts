@@ -9,7 +9,6 @@ const PUBLIC_FILES = new Map([
   ["/assets/models/ryugu.glb", "assets/models/ryugu.glb"],
   ["/assets/models/Deimos.glb", "assets/models/Deimos.glb"],
   ["/assets/models/Phobos.glb", "assets/models/Phobos.glb"],
-  ["/assets/density/cauchy.toml", "assets/density/cauchy.toml"],
   ["/assets/density/cauchy_elliptic.toml", "assets/density/cauchy_elliptic.toml"],
 ]);
 

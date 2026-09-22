@@ -30,7 +30,7 @@ const MEMORY_LIMIT_BYTES: f64 = 5.5 * 1024.0 * 1024.0 * 1024.0;
 const RELOAD_MEMORY_LIMIT_BYTES: f64 = 5.25 * 1024.0 * 1024.0 * 1024.0;
 
 const ALGO_KEY: &str = "ryugu_algo";
-const ALGO_ORDER: [&str; 5] = ["werner", "mascon", "rtfp", "carlson", "carlsonalpha"];
+const ALGO_ORDER: [&str; 4] = ["werner", "mascon", "rtfp", "carlsonalpha"];
 
 const TAB_LEASE_KEY: &str = "ryugu-cauchy-gravity-active-tab-v1";
 const TAB_ID_KEY: &str = "ryugu-cauchy-gravity-tab-id-v1";

@@ -40,12 +40,15 @@ fn compare_ref(key: &str) -> Option<CompareRef> {
 /// does not list RT-FP while RT-FP lists Carlson first.
 fn compare_order(algo: &str, mode: &str) -> &'static [&'static str] {
     match (algo, mode) {
-        ("rtfp", "cauchy") => &["carlson-cauchy", "mascon-cauchy"],
+        ("rtfp", "elliptic") => &["carlsonalpha-elliptic", "mascon-elliptic", "werner"],
+        ("rtfp", "cauchy") => &["carlson-cauchy", "mascon-cauchy", "werner"],
         ("rtfp", "constant") => &["werner"],
-        ("carlson", "cauchy") => &["mascon-cauchy"],
+        ("carlson", "cauchy") => &["mascon-cauchy", "werner"],
         ("carlson", "constant") => &["werner"],
-        ("carlsonalpha", "elliptic") => &["mascon-elliptic"],
+        ("carlsonalpha", "elliptic") => &["mascon-elliptic", "werner"],
         ("carlsonalpha", "constant") => &["werner"],
+        ("mascon", "elliptic") => &["werner"],
+        ("mascon", "cauchy") => &["werner"],
         _ => &[],
     }
 }

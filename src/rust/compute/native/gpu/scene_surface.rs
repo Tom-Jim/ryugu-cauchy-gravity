@@ -80,6 +80,7 @@ impl Scene {
     ///
     /// This dispatch uses its own WGSL entry point and never executes the
     /// RT-FP radial-remainder or ray pipelines.
+    #[allow(dead_code)]
     pub fn carlson_surface_tensors(&self) -> Result<Vec<Sym6>, String> {
         let mut out = vec![[0.0; 6]; self.n_points];
         for lo in (0..self.n_points).step_by(self.block_capacity) {
@@ -92,6 +93,7 @@ impl Scene {
         Ok(out)
     }
 
+    #[allow(dead_code)]
     pub fn carlson_surface_block(
         &self,
         lo: usize,

@@ -59,14 +59,12 @@ const SHADER_REMAINDER: &str = include_str!("../../../wgsl/compute/remainder.wgs
 const SHADER_CARLSON_ALPHA: &str = include_str!("../../../wgsl/compute/carlson_alpha.wgsl");
 
 const MODEL_PATH: &str = "./assets/models/ryugu.glb";
-const CAUCHY_PATH: &str = "./assets/density/cauchy.toml";
 const ELLIPTIC_PATH: &str = "./assets/density/cauchy_elliptic.toml";
 
 const ASSET_GEOMETRY: &str = "runtime:geometry";
 const ASSET_MASCON_TREE: &str = "runtime:mascon-tree";
 const ASSET_MASCON: &str = "runtime:mascon-points";
 const ASSET_RTFP: &str = "runtime:rtfp";
-const ASSET_CARLSON_CAUCHY: &str = "runtime:carlson-cauchy";
 const ASSET_CARLSON_ALPHA: &str = "runtime:carlson-alpha";
 
 const FACE_MAGIC_WERNER: u32 = 0x3152_5752;
@@ -126,7 +124,6 @@ include!("ray.rs");
 include!("algorithms/werner.rs");
 include!("algorithms/mascon.rs");
 include!("algorithms/rtfp.rs");
-include!("algorithms/carlson.rs");
 include!("algorithms/carlson_alpha.rs");
 
 fn bytes_to_f32(bytes: &[u8], count: usize) -> Vec<f32> {
