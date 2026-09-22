@@ -59,7 +59,10 @@ pub fn request_paint_reset() {
     // Drop any payload that was queued before this transition. A payload
     // submitted after the transition carries the new epoch and is retained.
     if let Ok(mut pending) = PENDING_BAKE.lock() {
-        if pending.as_ref().is_some_and(|item| item.reset_epoch < epoch) {
+        if pending
+            .as_ref()
+            .is_some_and(|item| item.reset_epoch < epoch)
+        {
             *pending = None;
         }
     }
