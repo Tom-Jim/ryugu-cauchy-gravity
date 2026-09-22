@@ -49,6 +49,7 @@ async fn run_job(
 
     let mut checkpoint: Option<Vec<u8>> = None;
     let mut start_face = 0usize;
+    let mut total_faces = 0.0f64;
     if !job.force_compute {
         let id = temporary_id(&algo, &mode_key(&algo, &density_mode), job.mm);
         let store = core.borrow().store.clone();
@@ -79,6 +80,7 @@ async fn run_job(
                     return Ok(());
                 }
             } else {
+                total_faces = temporary.total.max(0.0);
                 let completed = record_face_count(&temporary.bytes);
                 start_face = completed.min(temporary.completed.max(0.0) as usize);
                 checkpoint = Some(temporary.bytes);
@@ -87,7 +89,7 @@ async fn run_job(
     }
 
     let start_percent = if start_face > 0 {
-        (100.0 * start_face as f64 / FACE_TOTAL).min(99.0)
+        (100.0 * start_face as f64 / total_faces.max(start_face as f64)).min(99.0)
     } else {
         0.0
     };

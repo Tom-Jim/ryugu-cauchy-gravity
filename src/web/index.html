@@ -34,6 +34,30 @@
     }
     #app[v-cloak] { display: none; }
     #app > *, #saved-panel button, #algo-btn, #panel button, #standoff-range { pointer-events: auto; }
+    #asset-library-btn { position: fixed; top: 4rem; left: 1rem; z-index: 9; pointer-events: auto; border: 1px solid var(--line); border-radius: 5px; padding: .42rem .7rem; color: var(--text); background: var(--surface); backdrop-filter: blur(8px); cursor: pointer; font: 750 11px ui-monospace; }
+    #asset-library { position: fixed; inset: 0; z-index: 28; display: grid; place-items: center; padding: 4vh 4vw; background: rgba(2,6,14,.58); backdrop-filter: blur(14px); }
+    #asset-library[hidden] { display: none; }
+    .asset-window { width: min(900px, 100%); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-hot); border-radius: 10px; background: rgba(7,16,29,.86); box-shadow: 0 24px 90px rgba(0,0,0,.5); backdrop-filter: blur(18px); }
+    .asset-head, .asset-foot { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .85rem 1rem; border-bottom: 1px solid rgba(255,255,255,.1); }
+    .asset-foot { border-top: 1px solid rgba(255,255,255,.1); border-bottom: 0; color: var(--muted); font-size: 11px; }
+    .asset-head strong { color: var(--cyan); font-size: 14px; }
+    .asset-actions { display: flex; gap: .45rem; }
+    .asset-actions button, .asset-foot button { border: 1px solid var(--line); border-radius: 5px; padding: .4rem .65rem; color: var(--text); background: rgba(140,233,255,.1); cursor: pointer; font-size: 11px; font-weight: 750; }
+    .asset-actions button.primary, .asset-foot button.primary { color: #041019; background: var(--cyan); }
+    .asset-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; min-height: 0; overflow: auto; background: rgba(140,233,255,.12); }
+    .asset-column { padding: .85rem; background: rgba(7,16,29,.82); min-height: 22rem; }
+    .asset-column h2 { margin: 0 0 .65rem; color: var(--cyan); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .asset-row { display: flex; align-items: center; gap: .55rem; padding: .55rem .45rem; border: 1px solid rgba(255,255,255,.1); border-radius: 5px; margin-bottom: .45rem; cursor: pointer; }
+    .asset-row:hover, .asset-row.selected { border-color: var(--line-hot); background: rgba(140,233,255,.1); }
+    .asset-row.density-cauchy.selected { border-color: #7fe6ff; background: rgba(127,230,255,.14); }
+    .asset-row.density-elliptic.selected { border-color: #c1a4ff; background: rgba(193,164,255,.16); }
+    .asset-row input { accent-color: var(--cyan); }
+    .asset-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .asset-path { display: block; margin-top: .18rem; color: var(--muted); font-size: 10px; }
+    .asset-drop { margin-top: .8rem; padding: 1.1rem .65rem; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); text-align: center; font-size: 11px; }
+    .asset-drop.dragging { border-color: var(--cyan); color: var(--cyan); background: rgba(140,233,255,.08); }
+    .asset-error { margin: .7rem 1rem 0; padding: .65rem .75rem; border: 1px solid rgba(255,100,100,.75); border-radius: 6px; color: #ffd9d9; background: rgba(120,20,30,.35); font: 750 11px/1.4 ui-monospace; white-space: pre-wrap; }
+    @media (max-width: 700px) { .asset-columns { grid-template-columns: 1fr; } .asset-window { max-height: 92vh; } }
     #boot-error {
       position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
       box-sizing: border-box; padding: 2rem; white-space: pre-wrap; overflow: auto;
@@ -80,6 +104,17 @@
       border-radius: 6px; padding: .9rem 1rem; backdrop-filter: blur(8px);
       box-shadow: 0 0 30px rgba(40, 193, 255, .1);
     }
+    #model-parameters {
+      position: fixed; left: 1rem; top: 38%; z-index: 7; width: min(250px, calc(100vw - 2rem));
+      box-sizing: border-box; padding: .7rem .8rem; border: 1px solid var(--line);
+      border-radius: 7px; background: var(--surface); backdrop-filter: blur(8px);
+      box-shadow: 0 0 24px rgba(40,193,255,.08); pointer-events: auto;
+    }
+    #model-parameters h2 { margin: 0 0 .5rem; color: var(--cyan); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .parameter-note { margin: 0 0 .5rem; color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .parameter-row { display: grid; grid-template-columns: 1fr 104px; align-items: center; gap: .4rem; margin: .34rem 0; color: var(--text); font-size: 10px; }
+    .parameter-row input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 4px; padding: .25rem .35rem; color: var(--text); background: rgba(0,0,0,.22); font: 10px ui-monospace; }
+    @media (max-width: 700px) { #model-parameters { top: 4.2rem; left: auto; right: 1rem; width: 220px; } }
     #panel h1 { margin: 0 0 .55rem; font-size: 14px; font-weight: 750; color: var(--cyan); }
     #panel .row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .55rem; }
     #bake-btn, #reload-btn, #dens-btn {
@@ -267,6 +302,19 @@
     <div id="msg" v-show="ui.message.visible">{{ ui.message.text }}</div>
     <div id="compute-indicator" role="status" aria-live="polite"
          v-show="ui.compute.visible">{{ ui.compute.text }}</div>
+    <button id="asset-library-btn" type="button" @click="openAssets">Model: {{ assets.currentModel }} · library</button>
+    <section id="asset-library" v-show="assets.visible" role="dialog" aria-modal="true" aria-label="Model and density library"
+             @dragover="dragAssets" @dragleave="leaveAssets" @drop="dropAssets">
+      <div class="asset-window">
+        <header class="asset-head"><strong>IndexedDB asset library</strong><div class="asset-actions"><input id="asset-file-picker" hidden type="file" multiple accept=".glb,.toml" @change="importAssets" /><button type="button" @click="openAssetPicker">Import GLB / TOML</button><button type="button" @click="closeAssets">Close</button></div></header>
+        <div v-if="assets.message" class="asset-error" role="alert">{{ assets.message }}</div>
+        <div class="asset-columns">
+          <div class="asset-column"><h2>Models · choose one</h2><label v-for="item in assets.models" :key="item.id" class="asset-row" :class="{selected:item.selected}"><input type="checkbox" :checked="item.selected" @change="selectAsset(item, 'model')" /><span class="asset-name">{{ item.name }}<small class="asset-path">{{ item.path || 'Imported file' }}</small></span></label><div class="asset-drop" :class="{dragging:assets.dragging}">Drop .glb files here</div></div>
+          <div class="asset-column"><h2>Density roles · exactly two</h2><p style="margin:.1rem 0 .7rem;color:var(--muted);font-size:10px;line-height:1.4">Blue Cauchy → RT-FP / Carlson / Mascon<br />Violet Elliptic → CarlsonAlpha / fractional Mascon</p><label v-for="item in assets.densities" :key="item.id" class="asset-row" :class="[{selected:item.selected}, item.name.toLowerCase().includes('elliptic') ? 'density-elliptic' : 'density-cauchy']"><input type="checkbox" :checked="item.selected" @change="selectAsset(item, 'density')" /><span class="asset-name">{{ item.name }}<small class="asset-path">{{ item.path || 'Imported file' }}</small></span></label><div class="asset-drop" :class="{dragging:assets.dragging}">Drop .toml files here</div></div>
+        </div>
+        <footer class="asset-foot"><span>{{ assets.message || (canApplyAssets() ? 'Ready: one GLB and both TOML roles selected.' : 'Select one GLB and both TOML roles.') }}</span><button class="primary" type="button" :disabled="assets.busy || !canApplyAssets()" @click="applyAssets">Use selected files</button></footer>
+      </div>
+    </section>
     <div id="mobile-warning" role="alert" v-show="ui.mobile.visible">
       <div>
         <strong>Desktop browser required</strong>
@@ -313,6 +361,13 @@
       <span id="algo-label">{{ ui.algo.label }}</span>
       <button id="algo-btn" type="button" @click="onAlgo">{{ ui.algo.button }}</button>
     </div>
+    <section id="model-parameters" aria-label="Asteroid model parameters">
+      <h2>{{ assets.currentModel }} · physical parameters</h2>
+      <p class="parameter-note">Ryugu reference defaults. Values are saved for this browser session and can be edited for the selected model.</p>
+      <label class="parameter-row"><span>Mass (kg)</span><input type="number" min="1" step="1e8" :value="modelParameters.massKg" @change="updateModelParameter('massKg', $event)" /></label>
+      <label class="parameter-row"><span>Mean density (kg/m³)</span><input type="number" min="1" step="1" :value="modelParameters.meanDensityKgM3" @change="updateModelParameter('meanDensityKgM3', $event)" /></label>
+      <label class="parameter-row"><span>Scale (m / GLB unit)</span><input type="number" min="0.000001" step="0.001" :value="modelParameters.scaleMetersPerUnit" @change="updateModelParameter('scaleMetersPerUnit', $event)" /></label>
+    </section>
     <div id="standoff">
       <span id="standoff-val">{{ ui.standoff.value }}</span>
       <input id="standoff-range" type="range" min="0" max="1000" step="1"

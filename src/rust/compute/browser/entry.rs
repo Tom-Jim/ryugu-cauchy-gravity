@@ -10,13 +10,24 @@ pub struct ComputeEngine {
 
 #[wasm_bindgen]
 impl ComputeEngine {
+    /// Replace the browser compute source selected by the asset library.
+    /// This invalidates only derived source buffers; WGSL kernels and Bevy
+    /// rendering remain untouched.
+    pub fn set_model_bytes(&mut self, bytes: js_sys::Uint8Array) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_model_bytes(bytes.to_vec());
+        }
+    }
+
+    pub fn set_density_text(&mut self, name: String, text: String) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_density_text(&name, text);
+        }
+    }
     /// Diagnostic-only tensor path. It returns six Hessian components per
     /// observation point and never writes an RHGF record or touches rendering.
     pub async fn evaluate_diagnostic(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
         let algorithm = field_string(&options, "algorithm").unwrap_or_default();
-        let face_count = field_f64(&options, "faceCount")
-            .unwrap_or(128.0)
-            .clamp(1.0, FACE_COUNT as f64) as usize;
         let height_mm = field_f64(&options, "heightMm").unwrap_or(0.0);
         let source_set = field_string(&options, "sourceSet").unwrap_or_default();
         let direction_limit =
@@ -30,6 +41,13 @@ impl ComputeEngine {
                 "WebGPU computation backend is unavailable",
             ));
         };
+        let model_faces = gpu
+            .model_face_count()
+            .await
+            .map_err(|error| JsValue::from_str(&error))?;
+        let face_count = field_f64(&options, "faceCount")
+            .unwrap_or(128.0)
+            .clamp(1.0, model_faces as f64) as usize;
         let mut output = Vec::with_capacity(face_count * 6);
         let mut start = 0usize;
         let size = block_size(&algorithm);
@@ -188,9 +206,18 @@ impl ComputeEngine {
     /// checkpoint events. Returns the RHGF v5 record, or `null` when aborted.
     pub async fn evaluate(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
         let algorithm = field_string(&options, "algorithm").unwrap_or_default();
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Err(JsValue::from_str(
+                "WebGPU computation backend is unavailable",
+            ));
+        };
+        let face_count = gpu
+            .model_face_count()
+            .await
+            .map_err(|error| JsValue::from_str(&error))?;
         let start_face = field_f64(&options, "startFace")
             .unwrap_or(0.0)
-            .clamp(0.0, FACE_COUNT as f64) as usize;
+            .clamp(0.0, face_count as f64) as usize;
         let height_mm = field_f64(&options, "heightMm").unwrap_or(0.0);
         let source_set = field_string(&options, "sourceSet").unwrap_or_default();
         let signal = field(&options, "signal");
@@ -201,15 +228,15 @@ impl ComputeEngine {
             .dyn_ref::<js_sys::Uint8Array>()
             .map(|array| array.to_vec());
 
-        let mut bytes = make_record(checkpoint_bytes.as_deref(), height_mm, FACE_COUNT);
+        let mut bytes = make_record(checkpoint_bytes.as_deref(), height_mm, face_count);
         let start_face = prepare_record(&mut bytes, start_face);
         let mut completed = start_face;
         let mut block_counter = 0usize;
 
         let emit_progress = |completed: usize, on_progress: &JsValue| {
             if let Some(callback) = on_progress.dyn_ref::<js_sys::Function>() {
-                let fraction = if FACE_COUNT > 0 {
-                    completed as f64 / FACE_COUNT as f64
+                let fraction = if face_count > 0 {
+                    completed as f64 / face_count as f64
                 } else {
                     1.0
                 };
@@ -239,36 +266,30 @@ impl ComputeEngine {
                 let _ = js_sys::Reflect::set(
                     &payload,
                     &JsValue::from_str("total"),
-                    &JsValue::from_f64(FACE_COUNT as f64),
+                    &JsValue::from_f64(face_count as f64),
                 );
                 let _ = js_sys::Reflect::set(
                     &payload,
                     &JsValue::from_str("complete"),
-                    &JsValue::from_bool(completed >= FACE_COUNT),
+                    &JsValue::from_bool(completed >= face_count),
                 );
                 let _ = callback.call1(&JsValue::NULL, &payload);
             }
         };
 
         emit_progress(completed, &on_progress);
-        if completed >= FACE_COUNT {
+        if completed >= face_count {
             emit_checkpoint(&bytes, completed, true, block_counter, &on_checkpoint);
             return Ok(js_sys::Uint8Array::from(bytes.as_slice()).into());
         }
 
-        let Some(gpu) = self.gpu.as_mut() else {
-            return Err(JsValue::from_str(
-                "WebGPU computation backend is unavailable",
-            ));
-        };
-
         let size = block_size(&algorithm);
         let mut block_start = start_face;
-        while block_start < FACE_COUNT {
+        while block_start < face_count {
             if signal_aborted(&signal) {
                 return Ok(JsValue::NULL);
             }
-            let block_end = FACE_COUNT.min(block_start + size);
+            let block_end = face_count.min(block_start + size);
             let constant = source_set == "constant";
             let scalars = match algorithm.as_str() {
                 "werner" => {

@@ -11,7 +11,7 @@
 
 mod gradient;
 
-use bevy::asset::AssetMetaCheck;
+use bevy::asset::{AssetLoadFailedEvent, AssetMetaCheck};
 use bevy::camera::primitives::Aabb;
 use bevy::log::{Level, LogPlugin};
 use bevy::mesh::VertexAttributeValues;
@@ -26,8 +26,10 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use gradient::{
     BakePaint, DisplayWindow, colormap_scalar, display_window_for, ensure_base_colors,
     explode_mesh_for_flat_faces, paint_face_on_colors, push_bake_bytes,
-    push_bake_bytes_preserving_window, take_pending_bake, triangle_count,
+    push_bake_bytes_preserving_window, request_paint_reset, take_pending_bake, triangle_count,
 };
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 const PERIOD_S: f64 = 7.63 * 3600.0;
@@ -36,6 +38,44 @@ const TIME_SCALE: f64 = 1000.0;
 const TARGET_SIZE: f32 = 900.0;
 /// Faces colored per frame while catching up to bake progress.
 const PAINT_PER_FRAME: usize = 4000;
+
+static PENDING_MODEL_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static DISPLAY_SCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+#[wasm_bindgen]
+pub fn set_display_scale(scale_meters_per_unit: f32) {
+    if scale_meters_per_unit.is_finite() && scale_meters_per_unit > 0.0 {
+        DISPLAY_SCALE_BITS.store(scale_meters_per_unit.to_bits(), Ordering::Relaxed);
+    }
+}
+
+fn pending_model_url() -> &'static Mutex<Option<String>> {
+    PENDING_MODEL_URL.get_or_init(|| Mutex::new(None))
+}
+
+/// Queue a GLB for the display scene. The existing scene is kept visible until
+/// Bevy has accepted the new asset, so a bad upload cannot blank the viewer.
+#[wasm_bindgen]
+pub fn set_display_model(bytes: js_sys::Uint8Array) -> Result<(), wasm_bindgen::JsValue> {
+    request_paint_reset();
+    let parts = js_sys::Array::new();
+    parts.push(&bytes);
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    *pending_model_url()
+        .lock()
+        .map_err(|_| wasm_bindgen::JsValue::from_str("model queue unavailable"))? = Some(url);
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn set_display_model_path(path: String) -> Result<(), wasm_bindgen::JsValue> {
+    request_paint_reset();
+    *pending_model_url()
+        .lock()
+        .map_err(|_| wasm_bindgen::JsValue::from_str("model queue unavailable"))? = Some(path);
+    Ok(())
+}
 
 #[derive(Component)]
 struct Ryugu;
@@ -77,6 +117,13 @@ pub fn run_with_bake(bytes: &[u8]) {
     run_app();
 }
 
+/// Start the display scene without manufacturing a fake bake record. The
+/// original GLB material remains visible until a real result is submitted.
+#[wasm_bindgen]
+pub fn start_renderer() {
+    run_app();
+}
+
 #[wasm_bindgen]
 pub fn push_bake_update(bytes: &[u8]) {
     push_bake_bytes(bytes);
@@ -85,6 +132,13 @@ pub fn push_bake_update(bytes: &[u8]) {
 #[wasm_bindgen]
 pub fn push_bake_update_preserving_window(bytes: &[u8]) {
     push_bake_bytes_preserving_window(bytes);
+}
+
+/// Reset only the display state. The next bake remains in the normal pending
+/// slot and cannot overwrite this reset request.
+#[wasm_bindgen]
+pub fn reset_bake_paint() {
+    request_paint_reset();
 }
 
 fn run_app() {
@@ -142,6 +196,8 @@ fn run_app() {
             Update,
             (
                 normalize,
+                ingest_model_selection,
+                report_model_load_failures,
                 prepare_paint_target,
                 ingest_bake_updates,
                 paint_faces_from_queue,
@@ -151,6 +207,51 @@ fn run_app() {
                 .chain(),
         )
         .run();
+}
+
+fn report_model_load_failures(mut failures: MessageReader<AssetLoadFailedEvent<Gltf>>) {
+    for failure in failures.read() {
+        error!(
+            "GLB display load failed: path={} error={:?}",
+            failure.path, failure.error
+        );
+    }
+}
+
+fn ingest_model_selection(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    roots: Query<Entity, With<Ryugu>>,
+    mut paint: ResMut<BakePaint>,
+) {
+    let Ok(mut pending) = pending_model_url().try_lock() else {
+        return;
+    };
+    let Some(url) = pending.take() else {
+        return;
+    };
+    request_paint_reset();
+    for root in &roots {
+        // Visibility on the GLTF root is not sufficient: Bevy's scene
+        // spawner has already created child mesh entities, and those can keep
+        // rendering independently. Remove the complete old scene before the
+        // replacement is spawned so gradients cannot paint two models at once.
+        commands.entity(root).despawn_related::<Children>();
+        commands.entity(root).despawn();
+    }
+    paint.face_count = 0;
+    paint.painted.clear();
+    paint.scalars.clear();
+    paint.queue.clear();
+    paint.reset_to_base = true;
+    commands.spawn((
+        // The explicit Scene label selects Bevy's GLTF loader. Do not append a
+        // query suffix: blob URLs with a query are rejected by some browsers
+        // before the GLTF asset reader sees them.
+        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(url))),
+        Transform::default(),
+        Ryugu,
+    ));
 }
 
 fn setup(mut commands: Commands, assets: Res<AssetServer>) {
@@ -257,9 +358,27 @@ fn prepare_paint_target(
 }
 
 fn ingest_bake_updates(mut paint: ResMut<BakePaint>) {
+    let reset_epoch = gradient::paint_reset_epoch();
+    if paint.reset_epoch != reset_epoch {
+        paint.reset_epoch = reset_epoch;
+        paint.scalars.clear();
+        paint.painted.clear();
+        paint.queue.clear();
+        paint.window = DisplayWindow::default();
+        paint.last_finite = 0;
+        // Keep face_count/base_colors: an algorithm switch keeps the same
+        // mesh, so the next bake can repaint it immediately. Model replacement
+        // clears those two fields in ingest_model_selection below.
+        paint.reset_to_base = true;
+    }
     let Some(pending) = take_pending_bake() else {
         return;
     };
+    // A callback from an aborted computation may have raced the reset. Its
+    // epoch is stale and must never repaint the newly selected algorithm.
+    if pending.reset_epoch != reset_epoch {
+        return;
+    }
     let Ok(face_scalar) = pending.baked else {
         return;
     };
@@ -424,7 +543,10 @@ fn normalize(
         if extent <= 1e-5 {
             continue;
         }
-        let s = TARGET_SIZE / extent;
+        // Preserve the established visible framing, then apply the single
+        // user-controlled GLB-to-Bevy scale coefficient on top of it.
+        let coefficient = f32::from_bits(DISPLAY_SCALE_BITS.load(Ordering::Relaxed));
+        let s = (TARGET_SIZE / extent) * coefficient;
         commands.entity(entity).insert(Sized);
         commands
             .entity(entity)

@@ -6,7 +6,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-const FACE_COUNT: u32 = 196_608;
 const GRID_SIZE: usize = 192;
 const CONSTANT_DENSITY: f64 = 1190.0;
 const KM_TO_M: f64 = 1000.0;

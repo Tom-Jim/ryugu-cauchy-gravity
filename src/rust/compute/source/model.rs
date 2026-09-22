@@ -115,11 +115,8 @@ fn parse_glb_model(glb: &[u8]) -> Result<Vec<Triangle>, String> {
             make_triangle(a, b, c)
         });
     }
-    if triangles.len() != FACE_COUNT as usize {
-        return Err(format!(
-            "expected {FACE_COUNT} model faces, found {}",
-            triangles.len()
-        ));
+    if triangles.is_empty() {
+        return Err("GLB triangle primitive contains no faces".into());
     }
     Ok(triangles)
 }

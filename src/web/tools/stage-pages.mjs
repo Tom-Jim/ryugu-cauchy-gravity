@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const root = join(import.meta.dir, "..", "..", "..");
@@ -10,9 +10,20 @@ const files = [
   "pkg/ryugu_cauchy_gravity_bg.wasm",
   "pkg/app.js",
   "assets/models/ryugu.glb",
+  "assets/models/Deimos.glb",
+  "assets/models/Phobos.glb",
   "assets/density/cauchy.toml",
   "assets/density/cauchy_elliptic.toml",
 ];
+
+// Keep every checked-in model available to the same asset library used by the
+// dev server. This also makes `pages:stage` correct when a new GLB is added.
+for (const name of readdirSync(join(root, "assets/models"))) {
+  if (name.toLowerCase().endsWith(".glb")) {
+    const entry = `assets/models/${name}`;
+    if (!files.includes(entry)) files.push(entry);
+  }
+}
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });

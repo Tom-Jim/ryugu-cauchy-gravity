@@ -21,7 +21,6 @@ const G: f64 = 6.674_30e-11;
 const RECORD_HEADER: usize = 28;
 const RECORD_MAGIC: u32 = 0x5248_4746;
 const RECORD_VERSION: u32 = 5;
-const FACE_COUNT: usize = 196_608;
 const CONSTANT_DENSITY: f64 = 1190.0;
 const ANALYTIC_BLOCK_FACES: usize = 8192;
 /// Faces per dispatch block. Each block is one upload/dispatch/readback round
@@ -107,6 +106,7 @@ struct GpuSolver {
     queue: wgpu::Queue,
     pipelines: HashMap<String, wgpu::ComputePipeline>,
     source: Option<Rc<RuntimeSource>>,
+    model_bytes: Option<Vec<u8>>,
     density_files: HashMap<String, Rc<String>>,
     assets: HashMap<String, Rc<Vec<u8>>>,
     face_buffers: HashMap<String, wgpu::Buffer>,

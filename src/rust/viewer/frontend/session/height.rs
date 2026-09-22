@@ -26,9 +26,6 @@ const STANDOFF_MAX_MM: f64 = STANDOFF_HIGH_MAX_MM;
 /// Shared start height (mm) — identical for every algorithm.
 const STANDOFF_DEFAULT_MM: f64 = 16000.0;
 
-/// Faces in a complete record.
-const FACE_TOTAL: f64 = 196608.0;
-
 const MEMORY_LIMIT_BYTES: f64 = 5.5 * 1024.0 * 1024.0 * 1024.0;
 const RELOAD_MEMORY_LIMIT_BYTES: f64 = 5.25 * 1024.0 * 1024.0 * 1024.0;
 

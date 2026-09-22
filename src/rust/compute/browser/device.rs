@@ -44,6 +44,7 @@ impl GpuSolver {
             queue,
             pipelines: HashMap::new(),
             source: None,
+            model_bytes: None,
             density_files: HashMap::new(),
             assets: HashMap::new(),
             face_buffers: HashMap::new(),
@@ -110,11 +111,39 @@ impl GpuSolver {
 
     async fn runtime_source(&mut self) -> Result<Rc<RuntimeSource>, String> {
         if self.source.is_none() {
-            let url = pipeline_url(MODEL_PATH, &self.base_url);
-            let glb = fetch_bytes(&url).await.map_err(js_error)?;
+            let glb = if let Some(bytes) = self.model_bytes.as_ref() {
+                bytes.clone()
+            } else {
+                let url = pipeline_url(MODEL_PATH, &self.base_url);
+                fetch_bytes(&url).await.map_err(js_error)?
+            };
             self.source = Some(Rc::new(RuntimeSource::from_glb(&glb)?));
         }
         Ok(self.source.as_ref().unwrap().clone())
+    }
+
+    async fn model_face_count(&mut self) -> Result<usize, String> {
+        Ok(self.runtime_source().await?.face_count())
+    }
+
+    fn set_model_bytes(&mut self, bytes: Vec<u8>) {
+        self.model_bytes = Some(bytes);
+        self.source = None;
+        self.assets.clear();
+        self.face_buffers.clear();
+        self.mesh_buffers.clear();
+        self.mascon_buffers.clear();
+    }
+
+    fn set_density_text(&mut self, name: &str, text: String) {
+        let path = if name.to_ascii_lowercase().contains("elliptic") {
+            ELLIPTIC_PATH
+        } else {
+            CAUCHY_PATH
+        };
+        self.density_files.insert(path.to_string(), Rc::new(text));
+        self.assets.clear();
+        self.mascon_buffers.clear();
     }
 
     async fn density_text(&mut self, path: &str) -> Result<Rc<String>, String> {

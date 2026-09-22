@@ -255,10 +255,9 @@ fn init_viewer_state(core: &Rc<RefCell<Core>>) {
 }
 
 async fn start_engine(core: &Rc<RefCell<Core>>) -> Result<(), String> {
-    // Start the renderer on an empty record so the original model, with its own
-    // materials and vertex colours, is on screen while the solvers run.
-    let stub = [0u8; RECORD_HEADER];
-    crate::run_with_bake(&stub);
+    // Start the renderer directly. The original model remains visible until a
+    // real bake arrives; no synthetic zero-face record is needed.
+    crate::start_renderer();
     wait_for_rendered_frames(2).await;
     core.borrow().ui.status("Loading the browser solver…");
     refresh_saved(core).await;

@@ -104,11 +104,9 @@ fn hide_compute_indicator(core: &Rc<RefCell<Core>>) {
     core.borrow().ui.compute_indicator(false, "Computing · 0.0%");
 }
 
-/// A zero-length record restores the model's own material instead of painting it.
-fn restore_original_model(core: &Rc<RefCell<Core>>) {
-    let mut stub = [0u8; RECORD_HEADER];
-    stub[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
-    stub[4..8].copy_from_slice(&RECORD_VERSION.to_le_bytes());
-    crate::push_bake_update(&stub);
+/// Reset the renderer before a new algorithm/density result arrives. This is a
+/// separate event from the bake payload, so the first new block cannot erase it.
+fn reset_renderer_state(core: &Rc<RefCell<Core>>) {
+    crate::reset_bake_paint();
     core.borrow_mut().scalar_stats = None;
 }

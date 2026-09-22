@@ -52,7 +52,7 @@ impl GpuSolver {
 
         let geometry_url = pipeline_url(ASSET_GEOMETRY, &self.base_url);
         let geometry_bytes = self.asset(&geometry_url).await?;
-        let geometry = parse_face_asset(&geometry_bytes, FACE_MAGIC_WERNER, Some(FACE_COUNT))?;
+        let geometry = parse_face_asset(&geometry_bytes, FACE_MAGIC_WERNER, None)?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_key = format!("{geometry_url}:faces");
         if !self.face_buffers.contains_key(&geometry_key) {

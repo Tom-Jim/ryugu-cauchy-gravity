@@ -22,6 +22,9 @@ impl Session {
             ui: Ui::new(&viewer_ui, &saved, &diagnostics),
             store: Rc::new(Store::new()),
             engine: None,
+            pending_model: None,
+            pending_cauchy: None,
+            pending_elliptic: None,
             algo: "werner".to_string(),
             density_mode: "cauchy".to_string(),
             density_selections: HashMap::new(),
@@ -90,6 +93,36 @@ impl Session {
         start_bake(&self.core.clone());
     }
 
+    /// Install resources chosen by the frontend IndexedDB library. This only
+    /// changes the browser compute source and density input; Bevy rendering
+    /// and all WGSL kernels stay unchanged.
+    pub fn set_asset_selection(
+        &self,
+        model: js_sys::Uint8Array,
+        model_path: String,
+        cauchy_text: String,
+        elliptic_text: String,
+    ) {
+        let bytes = model.to_vec();
+        {
+            let mut state = self.core.borrow_mut();
+            state.pending_model = Some(bytes);
+            state.pending_cauchy = Some(cauchy_text);
+            state.pending_elliptic = Some(elliptic_text);
+            state.latest_results.clear();
+            state.saved_current_id = None;
+            state.compare_key.clear();
+            state.record_generation += 1;
+        }
+        if !model_path.is_empty() {
+            if let Err(error) = crate::set_display_model_path(model_path.clone()) {
+                self.core.borrow().ui.status(&format!("Model display update failed: {error:?}"));
+            }
+        }
+        cancel_compute(&self.core);
+        apply_pending_assets(&self.core, &model_path);
+    }
+
     pub fn on_density(&self) {
         let core = self.core.clone();
         let label = {
@@ -109,6 +142,12 @@ impl Session {
             .status(&format!("Switched to {label} density…"));
         let mm = core.borrow().standoff_mm;
         request_static_compute(&core, mm, true, false);
+    }
+
+    pub fn set_model_scale(&self, scale_meters_per_unit: f64) {
+        if scale_meters_per_unit.is_finite() && scale_meters_per_unit > 0.0 {
+            crate::set_display_scale(scale_meters_per_unit as f32);
+        }
     }
 
     /// Re-paint the latest in-memory result with a shared colour window.
@@ -211,5 +250,39 @@ impl Session {
         spawn_local(async move {
             refresh_saved(&core).await;
         });
+    }
+}
+
+fn apply_pending_assets(core: &Rc<RefCell<Core>>, model_path: &str) {
+    let model = {
+        let mut state = core.borrow_mut();
+        let Some(model) = state.pending_model.take() else { return };
+        let Some(cauchy) = state.pending_cauchy.take() else {
+            state.pending_model = Some(model);
+            return;
+        };
+        let Some(elliptic) = state.pending_elliptic.take() else {
+            state.pending_model = Some(model);
+            state.pending_cauchy = Some(cauchy);
+            return;
+        };
+        let Some(engine) = state.engine.as_mut() else {
+            state.pending_model = Some(model);
+            state.pending_cauchy = Some(cauchy);
+            state.pending_elliptic = Some(elliptic);
+            return;
+        };
+        engine.set_model_bytes(js_sys::Uint8Array::from(model.as_slice()));
+        engine.set_density_text("cauchy.toml".to_string(), cauchy);
+        engine.set_density_text("cauchy_elliptic.toml".to_string(), elliptic);
+        model
+    };
+    let display_result = if model_path.is_empty() {
+        crate::set_display_model(js_sys::Uint8Array::from(model.as_slice()))
+    } else {
+        crate::set_display_model_path(model_path.to_string())
+    };
+    if let Err(error) = display_result {
+        core.borrow().ui.status(&format!("Model display update failed: {error:?}"));
     }
 }

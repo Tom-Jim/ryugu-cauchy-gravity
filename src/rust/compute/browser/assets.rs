@@ -47,7 +47,7 @@ fn parse_mesh_pipeline(bytes: &[u8]) -> Result<MeshLayout, String> {
     let dir_count = u32_at(bytes, 16) as usize;
     let kernel_count = u32_at(bytes, 20) as usize;
     let node_count = u32_at(bytes, 24) as usize;
-    if face_count != FACE_COUNT {
+    if face_count == 0 {
         return Err("invalid ray-pipeline face count".into());
     }
     let mut offset = 32usize;

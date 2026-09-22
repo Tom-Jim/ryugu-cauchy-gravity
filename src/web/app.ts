@@ -12,6 +12,8 @@ type SessionController = {
   on_delete_item(id: string): void;
   run_diagnostic(kind: string): void;
   evaluate_diagnostic(options: Record<string, unknown>): Promise<Uint8Array>;
+  set_asset_selection(model: Uint8Array, modelPath: string, cauchyText: string, ellipticText: string): void;
+  set_model_scale(scaleMetersPerUnit: number): void;
 };
 
 type DiagnosticPoint = { x: number; y: number };
@@ -99,6 +101,233 @@ export const diagnostics = reactive({
   downloadName: "diagnostic.svg",
   series: [] as DiagnosticSeries[],
 });
+
+type AssetItem = { id: string; kind: "model" | "density"; name: string; path?: string; bytes?: Uint8Array; selected: boolean; };
+export const assets = reactive({
+  visible: false, loading: false, busy: false, dragging: false, message: "",
+  currentModel: "ryugu.glb",
+  models: [] as AssetItem[], densities: [] as AssetItem[],
+});
+
+// Ryugu reference values (Hayabusa2 shape/mass scale). These are display and
+// session parameters; changing them never mutates the Bevy or WGSL pipelines.
+export const modelParameters = reactive({
+  massKg: 4.50e11,
+  meanDensityKgM3: 1190,
+  scaleMetersPerUnit: 1.0,
+});
+function loadModelParameters() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("ryugu-model-parameters-v2") || "null");
+    if (saved && typeof saved === "object") {
+      for (const key of Object.keys(modelParameters) as Array<keyof typeof modelParameters>) {
+        const value = Number(saved[key]);
+        if (Number.isFinite(value) && value > 0) modelParameters[key] = value;
+      }
+    }
+  } catch { /* use reference defaults */ }
+}
+function saveModelParameters() {
+  localStorage.setItem("ryugu-model-parameters-v2", JSON.stringify(modelParameters));
+}
+loadModelParameters();
+function applyPhysicalParameters(text: string): string {
+  return text
+    .replace(/(^|\n)total_mass_target\s*=\s*[-+0-9.eE]+/m, `$1total_mass_target = ${modelParameters.massKg}`)
+    .replace(/(^|\n)bulk_density_ref\s*=\s*[-+0-9.eE]+/m, `$1bulk_density_ref = ${modelParameters.meanDensityKgM3}`);
+}
+
+const ASSET_DB = "ryugu-cauchy-gravity";
+const ASSET_STORE = "resources";
+const ASSET_LOCK = "ryugu-cauchy-gravity:asset-session";
+const ASSET_LOCK_TTL_MS = 8_000;
+const ASSET_LOCK_HEARTBEAT_MS = 2_000;
+const assetSessionToken = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+let assetDb: IDBDatabase | null = null;
+let assetSessionOwned = false;
+let assetSessionReady: Promise<boolean>;
+let assetHeartbeat: number | undefined;
+let assetSessionError = "";
+const assetDefaults: AssetItem[] = [
+  { id: "model:ryugu.glb", kind: "model", name: "ryugu.glb", path: "assets/models/ryugu.glb", selected: true },
+  { id: "model:Deimos.glb", kind: "model", name: "Deimos.glb", path: "assets/models/Deimos.glb", selected: false },
+  { id: "model:Phobos.glb", kind: "model", name: "Phobos.glb", path: "assets/models/Phobos.glb", selected: false },
+  { id: "density:cauchy.toml", kind: "density", name: "cauchy.toml", path: "assets/density/cauchy.toml", selected: true },
+  { id: "density:cauchy_elliptic.toml", kind: "density", name: "cauchy_elliptic.toml", path: "assets/density/cauchy_elliptic.toml", selected: true },
+];
+function assetRequest(request: IDBRequest): Promise<any> {
+  return new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+}
+function readAssetLock(): { token: string; heartbeat: number } | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(ASSET_LOCK) || "null");
+    return value && typeof value.token === "string" && Number.isFinite(value.heartbeat) ? value : null;
+  } catch { return null; }
+}
+function writeAssetLock() {
+  localStorage.setItem(ASSET_LOCK, JSON.stringify({ token: assetSessionToken, heartbeat: Date.now() }));
+}
+async function deleteAssetDatabase(): Promise<void> {
+  if (assetDb) { assetDb.close(); assetDb = null; }
+  await new Promise<void>((resolve) => {
+    const request = indexedDB.deleteDatabase(ASSET_DB);
+    request.onsuccess = request.onerror = request.onblocked = () => resolve();
+  });
+}
+async function startAssetSession(): Promise<boolean> {
+  const current = readAssetLock();
+  if (current && current.token !== assetSessionToken && Date.now() - current.heartbeat < ASSET_LOCK_TTL_MS) return false;
+  try {
+    writeAssetLock();
+    // Re-check after the write so two tabs opening at the same time cannot both win.
+    const confirmed = readAssetLock();
+    if (!confirmed || confirmed.token !== assetSessionToken) return false;
+    await deleteAssetDatabase();
+    assetSessionOwned = true;
+    assetHeartbeat = window.setInterval(() => {
+      if (assetSessionOwned) writeAssetLock();
+    }, ASSET_LOCK_HEARTBEAT_MS);
+    return true;
+  } catch (error) {
+    assetSessionError = `IndexedDB 初始化失败：${error instanceof Error ? error.message : String(error)}`;
+    return false;
+  }
+}
+function stopAssetSession() {
+  if (!assetSessionOwned) return;
+  assetSessionOwned = false;
+  if (assetHeartbeat !== undefined) window.clearInterval(assetHeartbeat);
+  assetHeartbeat = undefined;
+  if (readAssetLock()?.token === assetSessionToken) localStorage.removeItem(ASSET_LOCK);
+  // pagehide cannot await this operation; starting it still lets the browser
+  // remove the session database before the next tab opens.
+  void deleteAssetDatabase();
+}
+assetSessionReady = startAssetSession();
+window.addEventListener("pagehide", stopAssetSession, { once: true });
+window.addEventListener("beforeunload", stopAssetSession, { once: true });
+async function openAssetDb(): Promise<IDBDatabase> {
+  if (!assetSessionOwned && !(await assetSessionReady)) throw new Error("另一个标签页正在使用资源库，请关闭它后重试。");
+  if (assetDb) return assetDb;
+  const request = indexedDB.open(ASSET_DB, 3);
+  request.onupgradeneeded = () => {
+    if (!request.result.objectStoreNames.contains(ASSET_STORE)) request.result.createObjectStore(ASSET_STORE, { keyPath: "id" });
+  };
+  assetDb = await assetRequest(request);
+  return assetDb!;
+}
+async function readAssetRecords(): Promise<AssetItem[]> {
+  const db = await openAssetDb();
+  return (await assetRequest(db.transaction(ASSET_STORE).objectStore(ASSET_STORE).getAll())) as AssetItem[];
+}
+async function putAsset(item: AssetItem): Promise<void> {
+  const db = await openAssetDb();
+  const record = { id: item.id, kind: item.kind, name: item.name, path: item.path, bytes: item.bytes, selected: item.selected };
+  await assetRequest(db.transaction(ASSET_STORE, "readwrite").objectStore(ASSET_STORE).put(record));
+}
+async function deleteAsset(id: string): Promise<void> {
+  const db = await openAssetDb();
+  await assetRequest(db.transaction(ASSET_STORE, "readwrite").objectStore(ASSET_STORE).delete(id));
+}
+async function ensureAssetLibrary(): Promise<void> {
+  assets.loading = true;
+  assets.message = "";
+  try {
+    if (!(await assetSessionReady)) throw new Error(assetSessionError || "另一个标签页正在使用资源库，请关闭它后刷新页面。");
+    const existing = await readAssetRecords();
+    const byId = new Map(existing.map((item) => [item.id, item]));
+    for (const item of assetDefaults) if (!byId.has(item.id)) await putAsset(item);
+    const all = await readAssetRecords();
+    for (const item of all.filter((candidate) => candidate.kind === "density" && candidate.id.startsWith("density:"))) {
+      item.selected = true;
+      await putAsset(item);
+    }
+    const finalRecords = await readAssetRecords();
+    const storedModels = finalRecords.filter((item) => item.kind === "model");
+    if (storedModels.filter((item) => item.selected).length !== 1) {
+      const fallback = storedModels.find((item) => item.id === "model:ryugu.glb") ?? storedModels[0];
+      for (const item of storedModels) {
+        item.selected = item.id === fallback?.id;
+        await putAsset(item);
+      }
+    }
+    const normalizedRecords = await readAssetRecords();
+    assets.models = normalizedRecords.filter((item) => item.kind === "model");
+    assets.densities = normalizedRecords.filter((item) => item.kind === "density");
+    assets.currentModel = assets.models.find((item) => item.selected)?.name ?? "ryugu.glb";
+    // The coefficient is a model-to-Bevy unit conversion. Never carry a
+    // satellite's conversion (for example Deimos=15) into Ryugu's default
+    // asset, whose shipped GLB is already in metre-scale units.
+    if (assets.currentModel.toLowerCase() === "ryugu.glb") {
+      modelParameters.scaleMetersPerUnit = 1.0;
+      saveModelParameters();
+    }
+    assets.message = "";
+  } catch (error) {
+    assets.message = `IndexedDB 失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+  finally { assets.loading = false; }
+}
+async function bytesFor(item: AssetItem): Promise<Uint8Array> {
+  if (item.bytes) return item.bytes;
+  if (!item.path) throw new Error(`${item.name} has no source data`);
+  const response = await fetch(item.path, { cache: "force-cache" });
+  if (!response.ok) throw new Error(`Could not load ${item.path} (${response.status})`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  item.bytes = bytes;
+  await putAsset(item);
+  return bytes;
+}
+async function applyAssetSelection(): Promise<void> {
+  const selectedModels = assets.models.filter((item) => item.selected);
+  const model = selectedModels[0];
+  const densities = assets.densities.filter((item) => item.selected);
+  const cauchy = densities.find((item) => !item.name.toLowerCase().includes("elliptic"));
+  const elliptic = densities.find((item) => item.name.toLowerCase().includes("elliptic"));
+  if (selectedModels.length !== 1 || !model || densities.length !== 2 || !cauchy || !elliptic) {
+    assets.message = "Select exactly one GLB and exactly both TOML files before using them.";
+    return;
+  }
+  assets.busy = true;
+  try {
+    const modelBytes = await bytesFor(model);
+    const [cauchyBytes, ellipticBytes] = await Promise.all([bytesFor(cauchy), bytesFor(elliptic)]);
+    session?.set_asset_selection(
+      modelBytes,
+      model.path?.startsWith("assets/models/") ? model.path.slice("assets/".length) : "",
+      applyPhysicalParameters(new TextDecoder().decode(cauchyBytes)),
+      applyPhysicalParameters(new TextDecoder().decode(ellipticBytes)),
+    );
+    assets.currentModel = model.name;
+    assets.visible = false;
+    assets.message = "";
+    session?.on_bake();
+  } catch (error) { assets.message = String(error); }
+  finally { assets.busy = false; }
+}
+function canApplyAssets(): boolean {
+  const models = assets.models.filter((item) => item.selected);
+  const densities = assets.densities.filter((item) => item.selected);
+  return models.length === 1
+    && densities.length === 2
+    && densities.some((item) => !item.name.toLowerCase().includes("elliptic"))
+    && densities.some((item) => item.name.toLowerCase().includes("elliptic"));
+}
+async function importFiles(fileList: FileList | File[]): Promise<void> {
+  try {
+    for (const file of Array.from(fileList)) {
+      const lower = file.name.toLowerCase();
+      const kind = lower.endsWith(".glb") ? "model" : lower.endsWith(".toml") ? "density" : null;
+      if (!kind) continue;
+      const id = `${kind}:${file.name}:${file.size}:${file.lastModified}`;
+      await putAsset({ id, kind, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), selected: false });
+    }
+    await ensureAssetLibrary();
+    if (!assets.message) assets.message = "Imported files are ready to select.";
+  } catch (error) {
+    assets.message = `IndexedDB 导入失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+}
 
 const savedGroups = computed(() => {
   const groups = new Map<string, { algorithm: string; items: Array<Record<string, any>> }>();
@@ -231,6 +460,7 @@ const diagnosticChart = computed(() => {
 
 export function configureSession(controller: SessionController) {
   session = controller;
+  session.set_model_scale(modelParameters.scaleMetersPerUnit);
 }
 
 export function mountViewer() {
@@ -252,6 +482,46 @@ export function mountViewer() {
         ),
         onStandoffCommit: () => session?.on_standoff_commit(),
         onMobileDismiss: () => session?.on_mobile_dismiss(),
+        assets,
+        modelParameters,
+        updateModelParameter: (key: keyof typeof modelParameters, event: Event) => {
+          const value = Number((event.target as HTMLInputElement | null)?.value);
+          if (Number.isFinite(value) && value > 0) {
+            modelParameters[key] = value;
+            saveModelParameters();
+            if (key === "scaleMetersPerUnit") session?.set_model_scale(value);
+          }
+        },
+        openAssets: async () => { assets.visible = true; await ensureAssetLibrary(); },
+        closeAssets: () => { assets.visible = false; },
+        applyAssets: applyAssetSelection,
+        canApplyAssets,
+        openAssetPicker: () => document.querySelector<HTMLInputElement>("#asset-file-picker")?.click(),
+        selectAsset: (item: AssetItem, kind: "model" | "density") => {
+          const list = kind === "model" ? assets.models : assets.densities;
+          if (kind === "model") {
+            item.selected = true;
+            assets.currentModel = item.name;
+            if (item.name.toLowerCase() === "ryugu.glb") {
+              modelParameters.scaleMetersPerUnit = 1.0;
+              saveModelParameters();
+              session?.set_model_scale(1.0);
+            }
+            for (const candidate of list) candidate.selected = candidate.id === item.id;
+          } else {
+            item.selected = !item.selected;
+          }
+          void putAsset(item);
+        },
+        removeAsset: async (item: AssetItem) => {
+          if (item.id.startsWith("model:ryugu.glb") || item.id.startsWith("density:cauchy.toml") || item.id.startsWith("density:cauchy_elliptic.toml")) return;
+          await deleteAsset(item.id);
+          await ensureAssetLibrary();
+        },
+        importAssets: (event: Event) => { const files = (event.target as HTMLInputElement).files; if (files) void importFiles(files); },
+        dropAssets: (event: DragEvent) => { event.preventDefault(); assets.dragging = false; if (event.dataTransfer?.files) void importFiles(event.dataTransfer.files); },
+        dragAssets: (event: DragEvent) => { event.preventDefault(); assets.dragging = true; },
+        leaveAssets: () => { assets.dragging = false; },
         saveCurrent: () => session?.on_save_current(),
         downloadCurrent: () => session?.on_download_current(),
         deleteCurrent: () => session?.on_delete_current(),
@@ -276,6 +546,8 @@ export function mountViewer() {
           const svg = document.querySelector<SVGSVGElement>("#diagnostic-chart");
           if (!svg) return;
           const copy = svg.cloneNode(true) as SVGSVGElement;
+          copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+          copy.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
           const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
           style.textContent = ".diagnostic-grid{stroke:rgba(140,233,255,.13);stroke-width:1}.diagnostic-axis{stroke:rgba(231,247,255,.65);stroke-width:1}.diagnostic-tick{fill:#8da7b8;font:10px monospace}.diagnostic-label,.diagnostic-legend{fill:#e7f7ff;font:11px monospace}.diagnostic-path{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.diagnostic-point{stroke:#07101d;stroke-width:1.25}";
           copy.prepend(style);
@@ -285,13 +557,14 @@ export function mountViewer() {
           link.href = url;
           link.download = diagnostics.downloadName;
           link.click();
-          URL.revokeObjectURL(url);
+          window.setTimeout(() => URL.revokeObjectURL(url), 0);
         },
       };
     },
   });
   app.config.errorHandler = (error) => showFatalError(error);
   app.mount(root);
+  loadModelParameters();
   root.dataset.mounted = "true";
   mounted = true;
 }

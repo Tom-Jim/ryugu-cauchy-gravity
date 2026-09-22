@@ -10,7 +10,7 @@ fn request_static_compute(
         state.record_generation
     };
     cancel_compute(core);
-    restore_original_model(core);
+    reset_renderer_state(core);
     hide_compute_indicator(core);
     set_bar_percent(core, 0.0);
     set_standoff_ui(core, mm, true);
@@ -20,7 +20,7 @@ fn request_static_compute(
         state.compare_key.clear();
         state.scalar_stats = None;
     }
-    if core.borrow().engine.is_none() {
+    if core.borrow().engine.is_none() && !core.borrow().compute_running {
         core.borrow()
             .ui
             .status("Browser recomputation is not initialized");
@@ -52,7 +52,7 @@ fn cancel_compute(core: &Rc<RefCell<Core>>) {
 fn queue_compute(core: &Rc<RefCell<Core>>, job: Job) {
     let start = {
         let mut state = core.borrow_mut();
-        if state.engine.is_none() {
+        if state.engine.is_none() && !state.compute_running {
             return;
         }
         state.compute_target = Some(job);

@@ -4,6 +4,7 @@ use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAGIC: u32 = 0x52484746;
 pub struct BakedFaces {
@@ -13,6 +14,7 @@ pub struct BakedFaces {
 pub struct PendingBake {
     pub baked: Result<Vec<f32>, String>,
     pub preserve_window: bool,
+    pub reset_epoch: u64,
 }
 
 /// Parse an RHGF v5 face record: a 28-byte header
@@ -48,6 +50,24 @@ pub fn parse_bake(bytes: &[u8]) -> Result<BakedFaces, String> {
 }
 
 static PENDING_BAKE: Mutex<Option<PendingBake>> = Mutex::new(None);
+static PAINT_RESET_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Request an explicit renderer reset. This is separate from the bake slot so
+/// a reset cannot be overwritten by the first block of the next bake.
+pub fn request_paint_reset() {
+    let epoch = PAINT_RESET_EPOCH.fetch_add(1, Ordering::Release) + 1;
+    // Drop any payload that was queued before this transition. A payload
+    // submitted after the transition carries the new epoch and is retained.
+    if let Ok(mut pending) = PENDING_BAKE.lock() {
+        if pending.as_ref().is_some_and(|item| item.reset_epoch < epoch) {
+            *pending = None;
+        }
+    }
+}
+
+pub fn paint_reset_epoch() -> u64 {
+    PAINT_RESET_EPOCH.load(Ordering::Acquire)
+}
 
 pub fn push_bake_bytes(bytes: &[u8]) {
     push_bake_bytes_with_window(bytes, false);
@@ -65,6 +85,7 @@ fn push_bake_bytes_with_window(bytes: &[u8], preserve_window: bool) {
         *g = Some(PendingBake {
             baked: parsed,
             preserve_window,
+            reset_epoch: paint_reset_epoch(),
         });
     }
 }
@@ -391,6 +412,8 @@ pub struct BakePaint {
     pub base_colors: Vec<[f32; 4]>,
     /// Skip redundant ingest when the on-disk finite count has not changed.
     pub last_finite: usize,
+    /// Last explicit reset observed by the render schedule.
+    pub reset_epoch: u64,
 }
 
 impl BakePaint {

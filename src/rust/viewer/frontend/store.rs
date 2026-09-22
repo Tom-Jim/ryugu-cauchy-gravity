@@ -4,10 +4,11 @@
 //! database layout is unchanged, so a viewer that already has saved results can
 //! keep reading them:
 //!
-//! * database `ryugu-cauchy-gravity`, version 2,
+//! * database `ryugu-cauchy-gravity`, version 3,
 //! * object store `saved-results`, key path `id`, holding completed temporary records,
 //! * object store `temporary-results`, key path `id`, holding resumable
 //!   checkpoints.
+//! * object store `resources`, key path `id`, holding selected GLB/TOML assets.
 //!
 //! Nothing here computes anything; it moves bytes in and out of the browser's
 //! own temporary storage so a reload can resume instead of restarting. The
@@ -22,9 +23,10 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 const DB_NAME: &str = "ryugu-cauchy-gravity";
-const DB_VERSION: u32 = 2;
+const DB_VERSION: u32 = 3;
 const SAVED_STORE: &str = "saved-results";
 const TEMP_STORE: &str = "temporary-results";
+const RESOURCE_STORE: &str = "resources";
 
 /// Bump whenever a solver source buffer, kernel set or WGSL pipeline changes.
 ///
@@ -386,7 +388,7 @@ async fn open_db() -> Result<web_sys::IdbDatabase, String> {
             return;
         };
         let names = db.object_store_names();
-        for name in [SAVED_STORE, TEMP_STORE] {
+        for name in [SAVED_STORE, TEMP_STORE, RESOURCE_STORE] {
             if names.contains(name) {
                 continue;
             }

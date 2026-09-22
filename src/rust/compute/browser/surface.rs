@@ -27,7 +27,7 @@ impl GpuSolver {
         let face_buffer = self.face_buffers[&face_buffer_key].clone();
 
         let geometry_bytes = self.asset(geometry_asset).await?;
-        let geometry = parse_face_asset(&geometry_bytes, geometry_magic, Some(FACE_COUNT))?;
+        let geometry = parse_face_asset(&geometry_bytes, geometry_magic, None)?;
         let geometry_records = geometry_bytes[geometry.records.clone()].to_vec();
         let geometry_buffer_key = format!("{geometry_asset}:faces");
         if !self.face_buffers.contains_key(&geometry_buffer_key) {
