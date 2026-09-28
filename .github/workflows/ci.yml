@@ -27,7 +27,7 @@ jobs:
         name: Rust · native core
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - uses: dtolnay/rust-toolchain@stable
               with:
@@ -54,7 +54,7 @@ jobs:
         name: Rust · WASM viewer
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - uses: dtolnay/rust-toolchain@stable
               with:
@@ -79,7 +79,7 @@ jobs:
         name: Bun · server
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - uses: oven-sh/setup-bun@v2
               with:
@@ -118,7 +118,7 @@ jobs:
             pages: write
             id-token: write
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - uses: dtolnay/rust-toolchain@stable
               with:
