@@ -31,9 +31,9 @@ toml = "1"
 ellip = "1.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["3d", "webgpu"] }
-bevy_ecs = "0.19.1"
-bevy_panorbit_camera = "0.35"
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "webgpu"] }
+bevy_ecs = "0.20.1"
+bevy_panorbit_camera = "0.36"
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 js-sys = "0.3"
